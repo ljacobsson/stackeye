@@ -16,6 +16,7 @@
   "scripts": {
     "stackeye": "stackeye",
     "start": "node ./bin/stackeye.js",
+    "dev": "node ./bin/stackeye.js --watch",
     "check": "node --check bin/stackeye.js && node --check src/server.js && node --check src/discovery.js && node --check src/aws.js && node --check src/dsql.js && node --check public/app.js && node --test test/discovery.test.js",
     "prepublishOnly": "npm run check"
   },
@@ -41,6 +42,7 @@
   "dependencies": {
     "@aws-sdk/client-api-gateway": "^3.890.0",
     "@aws-sdk/client-apigatewayv2": "^3.890.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.890.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.890.0",
     "@aws-sdk/client-cloudformation": "^3.890.0",
     "@aws-sdk/client-cloudwatch": "^3.890.0",

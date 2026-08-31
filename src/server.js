@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process';
 import { discover } from './discovery.js';
 import { AwsData } from './aws.js';
 import { PayloadStore } from './payloads.js';
+import { BedrockAssistant } from './bedrock.js';
 import { previewOffice } from './office.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,9 +27,10 @@ export async function start(options) {
         return json(res, { id: requested.id, reused: Boolean(existing) });
       }
       const workspace = workspaces.get(url.searchParams.get('workspace')) || initialWorkspace;
-      const { aws, payloads, context } = workspace;
+      const { aws, payloads, assistant, context } = workspace;
       if (url.pathname === '/api/context') return json(res, { ...context, workspaceId: workspace.id, workspaces: workspaceList(workspaces) });
       if (url.pathname === '/api/metrics') return json(res, await aws.metrics(Number(url.searchParams.get('minutes') || 60), Number(url.searchParams.get('period') || 60)));
+      if (url.pathname === '/api/bedrock/models') return json(res, assistant.listModels());
       if (url.pathname === '/api/logs') return json(res, await aws.logEvents(Object.fromEntries(url.searchParams)));
       if (url.pathname === '/api/lambda/event-sources') return json(res, await aws.eventSourceMappings(Object.fromEntries(url.searchParams)));
       if (url.pathname === '/api/resource') return json(res, await aws.readResource(Object.fromEntries(url.searchParams)));
@@ -48,6 +50,7 @@ export async function start(options) {
         if (req.headers['x-stackeye-request'] !== '1') return json(res, { error: 'Invalid local request' }, 403);
         const body = await readJson(req);
         if (url.pathname === '/api/payloads/save') return json(res, await payloads.save(body));
+        if (url.pathname === '/api/bedrock/converse') return json(res, await assistant.converse(body, aws));
         if (url.pathname === '/api/payloads/delete') return json(res, await payloads.remove(body));
         if (url.pathname === '/api/lambda/invoke') return json(res, await aws.invoke(body));
         if (url.pathname === '/api/lambda/force-cold-start') return json(res, await aws.forceColdStart(body));
@@ -60,7 +63,7 @@ export async function start(options) {
         if (url.pathname === '/api/api-gateway/invoke') return json(res, await aws.invokeApi(body));
       }
       const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-      if (!['index.html', 'app.js', 'style.css', 'dashboard.css', 'workbench.css', 'query.css', 's3.css', 'dsql.css', 'dsql-erd.css', 'icons.css', 'resource-nav.css', 'architecture.css', 'architecture-routing.css', 'architecture-focus.css', 'workspaces.css'].includes(name) && !/^icons\/[a-z0-9-]+\.svg$/.test(name)) return json(res, { error: 'Not found' }, 404);
+      if (!['index.html', 'app.js', 'style.css', 'dashboard.css', 'workbench.css', 'query.css', 's3.css', 'dsql.css', 'dsql-erd.css', 'icons.css', 'resource-nav.css', 'architecture.css', 'architecture-routing.css', 'architecture-focus.css', 'workspaces.css', 'assistant.css'].includes(name) && !/^icons\/[a-z0-9-]+\.svg$/.test(name)) return json(res, { error: 'Not found' }, 404);
       const body = await fs.readFile(path.join(root, 'public', name));
       res.writeHead(200, { 'content-type': mime[path.extname(name)], 'cache-control': 'no-store' }); res.end(body);
     } catch (error) { json(res, { error: error.message }, error.name === 'ResourceNotFoundException' ? 404 : 500); }
@@ -93,7 +96,7 @@ async function createWorkspace(options) {
     throw new Error(`Could not load stack “${found.stackName}”${found.region ? ` in ${found.region}` : ''}${profile ? ` using profile “${profile}”` : ''}: ${error.message}.${loginHint}`);
   }
   const id = workspaceId(found, profile);
-  return { id, aws, payloads: new PayloadStore(options.cwd), context: { ...snapshot, region: found.region, profile, configEnv: found.configEnv, framework: found.framework, templatePath: found.templatePath, architecture: found.architecture } };
+  return { id, aws, payloads: new PayloadStore(options.cwd), assistant: new BedrockAssistant({ region: found.region, profile }), context: { ...snapshot, region: found.region, profile, configEnv: found.configEnv, framework: found.framework, templatePath: found.templatePath, architecture: found.architecture } };
 }
 function workspaceId(found, profile) { return `${found.stackName}|${found.region || ''}|${profile || ''}`; }
 function workspaceList(workspaces) { return [...workspaces.values()].map(({ id, context }) => ({ id, name: context.stack.name, region: context.region, profile: context.profile, status: context.stack.status })); }

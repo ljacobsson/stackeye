@@ -11,6 +11,20 @@ stackeye
 
 Run `stackeye` from a SAM or CDK project directory. StackEye opens its local dashboard at `http://127.0.0.1:4111`.
 
+### Develop StackEye against another project
+
+Link the StackEye checkout once, then run its linked binary from the SAM or CDK project you use for testing:
+
+```bash
+# In the StackEye repository (once)
+npm link
+
+# In the SAM or CDK project
+stackeye --watch
+```
+
+There is no need to run `npm pack` again. Changes under `src/` and `bin/` restart the local server automatically; changes under `public/` are served directly with caching disabled, so a browser refresh picks them up. Run `npm unlink -g stackeye` when you no longer want the global development link.
+
 ## Use it in a SAM project
 
 ```bash
@@ -75,14 +89,23 @@ The dashboard opens at `http://127.0.0.1:4111`. It only binds to localhost.
 - S3 folder browsing, bucket-wide filename search, downloads, and private localhost previews for images, PDF, text/code, Word, Excel, and PowerPoint files
 - Time-range selection and manual metric refresh
 - AWS profile, credential chain, and region support
+- A page-aware Bedrock assistant powered by the Converse API, using credentials from the active AWS profile
+- Bedrock model selection, visible-page questions, and multimodal questions about the currently previewed S3 PDF or image
+- Reviewable AI drafts for read-only Aurora DSQL queries and schema-aware DynamoDB scans and queries; drafts are never executed automatically
 
 The active AWS identity needs `cloudformation:DescribeStacks`, `cloudformation:ListStackResources`, `cloudwatch:GetMetricData`, `logs:FilterLogEvents`, and `sts:GetCallerIdentity`. `apigateway:GET` is optional and lets StackEye resolve REST API names for API Gateway metrics. Workbench actions additionally require `lambda:InvokeFunction`, `lambda:GetFunctionConfiguration`, `lambda:UpdateFunctionConfiguration`, `lambda:ListEventSourceMappings`, `lambda:GetEventSourceMapping`, `dynamodb:DescribeTable`, `dynamodb:Scan`, `dynamodb:Query`, and `dynamodb:UpdateItem` for the stack resources you want to operate on. The S3 explorer requires `s3:ListBucket` and `s3:GetObject` on the stack buckets. The Aurora DSQL editor requires `dsql:DbConnectAdmin` on the cluster, or `dsql:DbConnect` when connecting as a custom database role with `--dsql-user`.
+
+The assistant requires `bedrock:InvokeModel` for the selected model in the active region. Questions and visible page context are sent directly from the local StackEye process to Amazon Bedrock in your AWS account. When an S3 PDF or image is visible, StackEye reads at most 4.5 MB with the existing `s3:GetObject` permission and supplies the bytes to Converse. It does not upload the file to any third-party service. Additional Converse-compatible model IDs can be exposed in the selector with a comma-separated `STACKEYE_BEDROCK_MODELS` environment variable.
 
 Saved Lambda payloads may contain application data. Add `.stackeye/` to the project's `.gitignore` if events should remain local. StackEye reads existing `.samo11y/payloads.json` files for migration compatibility.
 
 ## Options
 
 Run `stackeye --help` for all options. Use `--no-open` in remote or containerized environments and `--port` to select another local port. Use `--dsql-user` to connect to Aurora DSQL as a database role other than `admin`; the role must be mapped to the active IAM identity.
+
+## Pricing
+
+Standard AWS fees apply for the AWS services and resources used by StackEye.
 
 ## Security
 

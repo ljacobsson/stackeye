@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline/promises';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
@@ -13,10 +15,20 @@ Usage: stackeye [options]
   --config <name>    samconfig.toml environment (SAM projects)
   --dsql-user <role> Aurora DSQL database role (default: admin)
   --port <number>    Local port (default: 4111)
+  --watch            Restart when StackEye source files change
   --no-open          Do not open a browser
   -h, --help         Show this help`);
   process.exit(0);
 }
+
+if (args.includes('--watch') && process.env.STACKEYE_WATCH_CHILD !== '1') {
+  const child = spawn(process.execPath, ['--watch', fileURLToPath(import.meta.url), ...args.filter(arg => arg !== '--watch')], {
+    cwd: process.cwd(), stdio: 'inherit', env: { ...process.env, STACKEYE_WATCH_CHILD: '1' }
+  });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => child.kill(signal));
+  child.once('exit', (code, signal) => { if (!signal) process.exitCode = code ?? 1; });
+  child.once('error', error => { console.error(`\n  stackeye watch: ${error.message}\n`); process.exitCode = 1; });
+} else {
 
 const { start } = await import('../src/server.js');
 
@@ -40,3 +52,4 @@ start({
   configEnv: value('--config') || value('--config-env'), chooseConfig, dsqlUser: value('--dsql-user'),
   port: Number(value('--port') || process.env.PORT || 4111), open: !args.includes('--no-open')
 }).catch((error) => { console.error(`\n  stackeye: ${error.message}\n`); process.exitCode = 1; });
+}

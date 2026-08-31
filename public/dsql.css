@@ -1,0 +1,48 @@
+/* One declared height for the whole row: schema, editor, and history all stretch to it and scroll inside. */
+.sql-grid{display:grid;grid-template-columns:300px 1fr;grid-auto-rows:430px;gap:14px}
+.sql-main{display:flex;gap:14px;min-width:0;min-height:0}
+.schema-panel,.editor-panel,.history-panel{display:flex;flex-direction:column;min-height:0}
+.editor-panel{flex:1 1 380px;min-width:0}
+.history-panel{flex:0 1 290px;min-width:190px}
+.sql-grid .panel-head,#dsql-filter,.editor-actions{flex:none}
+.schema-panel .panel-head{margin-bottom:12px}.schema-panel button{padding:5px 9px;font-size:13px}#dsql-filter{width:100%;margin-bottom:10px;font-size:12px}
+.schema-tree{flex:1;min-height:0;overflow:auto;display:grid;gap:3px;align-content:start}
+.schema-tree details{background:#0b1018;border:1px solid var(--line);border-radius:6px}
+.schema-tree summary{display:flex;align-items:center;gap:7px;padding:9px 10px;cursor:pointer;font:11px ui-monospace;color:#cbd6e4}
+.schema-tree summary::-webkit-details-marker{display:none}
+.schema-tree summary small{margin-left:auto;color:var(--muted);font-size:9px;white-space:nowrap}
+.schema-tree .table-schema{color:var(--muted)}
+.schema-tree .select-table{padding:2px 6px;font-size:10px;border-color:#33445b;background:#172131;color:var(--blue)}
+.schema-tree .column{display:flex;align-items:baseline;gap:7px;width:100%;text-align:left;border:0;background:none;padding:5px 12px 5px 22px;font:10px ui-monospace;color:#b9c8da;border-radius:0}
+.schema-tree .column:hover{background:#151d29}
+.schema-tree .column em{color:var(--muted);font-style:normal;margin-left:auto}
+.schema-tree .column b{color:var(--cyan);font-size:8px;letter-spacing:.5px}
+.editor-wrap{flex:1;min-height:0;position:relative;display:flex}
+.editor-panel .code-editor{flex:1;min-height:0;height:auto;resize:none}
+.row-cap{display:grid;gap:6px;color:var(--muted);font-size:9px;letter-spacing:.8px;text-align:right}
+.row-cap input{width:88px;padding:6px 8px;font:12px ui-monospace;text-align:right}
+.editor-actions{display:flex;align-items:center;gap:14px;margin-top:14px}
+.editor-actions .primary{white-space:nowrap}
+.editor-hint{color:var(--muted);font-size:10px}
+.sql-autocomplete{position:fixed;background:#0b1018;border:1px solid var(--line);border-radius:6px;max-height:200px;overflow-y:auto;min-width:180px;z-index:10;display:none;box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+.sql-autocomplete.show{display:block}
+.sql-autocomplete-item{padding:6px 10px;cursor:pointer;font-size:11px;color:#b9c8da;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.sql-autocomplete-item:hover,.sql-autocomplete-item.selected{background:#172131;color:var(--blue)}
+.sql-autocomplete-item small{color:var(--muted);font-size:9px;margin-left:auto}
+.history-panel .panel-head{margin-bottom:10px}.history-panel .panel-head button{padding:5px 9px;font-size:11px}
+.query-history{flex:1;min-height:0;overflow:auto;display:grid;gap:3px;align-content:start}
+.history-item{display:flex;align-items:center;gap:4px;background:#0b1018;border:1px solid var(--line);border-radius:6px;padding:4px 6px 4px 0}
+.history-item.pinned{border-color:#33445b}
+.history-item:hover{background:#101725}
+.history-sql{flex:1;min-width:0;display:grid;gap:3px;text-align:left;border:0;background:none;padding:5px 8px 5px 10px;border-radius:0;cursor:pointer}
+.history-sql code{font:11px ui-monospace;color:#cbd6e4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.history-sql:hover code{color:var(--blue)}
+.history-sql small{color:var(--muted);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.history-act{padding:3px 7px;font-size:11px;line-height:1.2;border-color:transparent;background:none;color:#5f6d80}
+.history-act:hover{border-color:#33445b;background:#172131;color:var(--blue)}
+.history-item.pinned .history-act[data-pin]{color:var(--amber)}
+.sql-null{color:#5d6a7d;font-style:italic}
+.field-type{display:block;margin-top:3px;color:#5f6d80;font-size:9px;letter-spacing:0;text-transform:none}
+.readonly-note{color:var(--amber)}
+@media(max-width:1400px){.sql-grid{grid-template-columns:250px 1fr}.history-panel{flex:0 1 235px}}
+@media(max-width:850px){.sql-grid{grid-template-columns:1fr;grid-auto-rows:auto}.schema-tree{flex:none;max-height:260px}.sql-main{flex-direction:column}.editor-wrap{flex:none;height:230px}.history-panel{flex:0 0 auto}.query-history{flex:0 0 auto;max-height:200px}.editor-actions{flex-direction:column;align-items:flex-start;gap:4px}}

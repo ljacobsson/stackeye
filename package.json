@@ -1,0 +1,63 @@
+{
+  "name": "stackeye",
+  "version": "0.1.0",
+  "description": "Local observability, architecture, and resource workbenches for AWS SAM and CDK stacks",
+  "type": "module",
+  "bin": {
+    "stackeye": "bin/stackeye.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "public",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "stackeye": "stackeye",
+    "start": "node ./bin/stackeye.js",
+    "check": "node --check bin/stackeye.js && node --check src/server.js && node --check src/discovery.js && node --check src/aws.js && node --check src/dsql.js && node --check public/app.js && node --test test/discovery.test.js",
+    "prepublishOnly": "npm run check"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "aws",
+    "sam",
+    "cdk",
+    "cloudformation",
+    "serverless",
+    "observability",
+    "cloudwatch",
+    "lambda",
+    "dashboard",
+    "cli"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-api-gateway": "^3.890.0",
+    "@aws-sdk/client-apigatewayv2": "^3.890.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.890.0",
+    "@aws-sdk/client-cloudformation": "^3.890.0",
+    "@aws-sdk/client-cloudwatch": "^3.890.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.890.0",
+    "@aws-sdk/client-dynamodb": "^3.890.0",
+    "@aws-sdk/client-lambda": "^3.890.0",
+    "@aws-sdk/client-s3": "^3.890.0",
+    "@aws-sdk/client-sns": "^3.890.0",
+    "@aws-sdk/client-sts": "^3.890.0",
+    "@aws-sdk/client-sqs": "^3.890.0",
+    "@aws-sdk/client-eventbridge": "^3.890.0",
+    "@aws-sdk/credential-providers": "^3.890.0",
+    "@aws-sdk/dsql-signer": "^3.1121.0",
+    "@aws-sdk/lib-dynamodb": "^3.890.0",
+    "fflate": "^0.8.2",
+    "pg": "^8.23.0",
+    "smol-toml": "^1.3.1",
+    "yaml": "^2.8.1"
+  }
+}

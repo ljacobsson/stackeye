@@ -1,0 +1,307 @@
+import { CloudFormationClient, DescribeStacksCommand, ListStackResourcesCommand } from '@aws-sdk/client-cloudformation';
+import { CloudWatchClient, GetMetricDataCommand } from '@aws-sdk/client-cloudwatch';
+import { CloudWatchLogsClient, FilterLogEventsCommand } from '@aws-sdk/client-cloudwatch-logs';
+import { APIGatewayClient, GetRestApiCommand } from '@aws-sdk/client-api-gateway';
+import { GetResourcesCommand, GetStagesCommand } from '@aws-sdk/client-api-gateway';
+import { ApiGatewayV2Client, GetApiCommand, GetRoutesCommand, GetStagesCommand as GetV2StagesCommand } from '@aws-sdk/client-apigatewayv2';
+import { CognitoIdentityProviderClient, DescribeUserPoolCommand, ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { SQSClient, GetQueueAttributesCommand, ReceiveMessageCommand } from '@aws-sdk/client-sqs';
+import { SNSClient, GetTopicAttributesCommand, ListSubscriptionsByTopicCommand } from '@aws-sdk/client-sns';
+import { EventBridgeClient, DescribeRuleCommand, ListTargetsByRuleCommand } from '@aws-sdk/client-eventbridge';
+import { LambdaClient, InvokeCommand, GetFunctionConfigurationCommand, UpdateFunctionConfigurationCommand, ListEventSourceMappingsCommand, GetEventSourceMappingCommand, waitUntilFunctionUpdated } from '@aws-sdk/client-lambda';
+import { DynamoDBClient, DescribeTableCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, ScanCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { S3Client, ListObjectsV2Command, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { fromIni } from '@aws-sdk/credential-providers';
+import { DsqlReader } from './dsql.js';
+
+export class AwsData {
+  constructor({ region, profile, stackName, templateResources, dsqlUser }) {
+    const common = { region, ...(profile ? { credentials: fromIni({ profile }) } : {}) };
+    this.cf = new CloudFormationClient(common); this.cw = new CloudWatchClient(common);
+    this.logs = new CloudWatchLogsClient(common); this.sts = new STSClient(common); this.apiGateway = new APIGatewayClient(common);
+    this.lambda = new LambdaClient(common); this.ddbRaw = new DynamoDBClient(common); this.ddb = DynamoDBDocumentClient.from(this.ddbRaw, { marshallOptions: { removeUndefinedValues: true } });
+    this.s3 = new S3Client(common);
+    this.cognito = new CognitoIdentityProviderClient(common); this.sqs = new SQSClient(common); this.sns = new SNSClient(common); this.events = new EventBridgeClient(common); this.apiGatewayV2 = new ApiGatewayV2Client(common);
+    this.dsql = new DsqlReader({ profile, user: dsqlUser });
+    this.region = region; this.stackName = stackName; this.templateResources = templateResources;
+  }
+
+  async initialize() {
+    const [identity, stack, deployedResources] = await Promise.all([
+      this.sts.send(new GetCallerIdentityCommand({})),
+      this.cf.send(new DescribeStacksCommand({ StackName: this.stackName })),
+      this.stackResources()
+    ]);
+    const found = stack.Stacks?.[0];
+    this.resources = deployedResources.map((r) => ({
+      logicalId: r.LogicalResourceId, physicalId: r.PhysicalResourceId, type: r.ResourceType,
+      status: r.ResourceStatus, updatedAt: r.Timestamp
+    }));
+    await this.enrichApiNames();
+    return { account: identity.Account, arn: identity.Arn, stack: {
+      name: found.StackName, status: found.StackStatus, createdAt: found.CreationTime,
+      updatedAt: found.LastUpdatedTime, outputs: found.Outputs || [], tags: found.Tags || []
+    }, resources: this.resources };
+  }
+
+  functions() { return this.resources.filter((r) => r.type === 'AWS::Lambda::Function'); }
+  tables() { return this.resources.filter((r) => r.type === 'AWS::DynamoDB::Table'); }
+  apis() { return this.resources.filter((r) => r.type === 'AWS::ApiGateway::RestApi'); }
+  buckets() { return this.resources.filter((r) => r.type === 'AWS::S3::Bucket'); }
+  clusters() { return this.resources.filter((r) => r.type === 'AWS::DSQL::Cluster'); }
+
+  async enrichApiNames() {
+    await Promise.all(this.apis().map(async (api) => {
+      try { api.metricName = (await this.apiGateway.send(new GetRestApiCommand({ restApiId: api.physicalId }))).name; }
+      catch { api.metricName = api.physicalId; }
+    }));
+  }
+
+  async stackResources() {
+    const resources = []; let nextToken;
+    do {
+      const page = await this.cf.send(new ListStackResourcesCommand({ StackName: this.stackName, NextToken: nextToken }));
+      resources.push(...(page.StackResourceSummaries || [])); nextToken = page.NextToken;
+    } while (nextToken);
+    return [...new Map(resources.map((resource) => [`${resource.LogicalResourceId}|${resource.PhysicalResourceId}`, resource])).values()];
+  }
+
+  async metrics(rangeMinutes = 60, period = 60) {
+    const end = new Date(); const start = new Date(end.getTime() - rangeMinutes * 60000);
+    const definitions = [];
+    const add = (service, resources, namespace, dimensions, metricDefs) => resources.forEach((resource) => metricDefs.forEach(([metric, stat]) => definitions.push({ service, resource: resource.logicalId, metric, stat, namespace, dimensions: dimensions(resource) })));
+    add('lambda', this.functions(), 'AWS/Lambda', (r) => [{ Name: 'FunctionName', Value: r.physicalId }], [
+      ['Invocations','Sum'], ['Errors','Sum'], ['Throttles','Sum'], ['Duration','Average'],
+      ['ConcurrentExecutions','Maximum'], ['AsyncEventAge','Maximum'], ['DeadLetterErrors','Sum']
+    ]);
+    add('dynamodb', this.tables(), 'AWS/DynamoDB', (r) => [{ Name: 'TableName', Value: r.physicalId }], [
+      ['ConsumedReadCapacityUnits','Sum'], ['ConsumedWriteCapacityUnits','Sum'], ['ThrottledRequests','Sum'],
+      ['SystemErrors','Sum'], ['UserErrors','Sum']
+    ]);
+    add('apigateway', this.apis(), 'AWS/ApiGateway', (r) => [{ Name: 'ApiName', Value: r.metricName }], [
+      ['Count','Sum'], ['4XXError','Sum'], ['5XXError','Sum'], ['Latency','Average'], ['IntegrationLatency','Average']
+    ]);
+    const queries = definitions.map((d, index) => ({
+      Id: `m${index}`, Label: d.metric,
+      MetricStat: { Metric: { Namespace: d.namespace, MetricName: d.metric, Dimensions: d.dimensions }, Period: period, Stat: d.stat }, ReturnData: true
+    }));
+    if (!queries.length) return [];
+    const result = await this.cw.send(new GetMetricDataCommand({ StartTime: start, EndTime: end, MetricDataQueries: queries, ScanBy: 'TimestampAscending' }));
+    return (result.MetricDataResults || []).map((row) => {
+      const definition = definitions[Number(row.Id.slice(1))];
+      return { service: definition.service, resource: definition.resource, metric: definition.metric, stat: definition.stat,
+        timestamps: row.Timestamps || [], values: row.Values || [], status: row.StatusCode };
+    });
+  }
+
+  async logEvents({ functionName, startTime, nextToken, filterPattern }) {
+    const fn = this.functions().find((r) => r.logicalId === functionName || r.physicalId === functionName);
+    if (!fn) throw new Error('Unknown Lambda function');
+    const result = await this.logs.send(new FilterLogEventsCommand({
+      logGroupName: `/aws/lambda/${fn.physicalId}`, startTime: Number(startTime) || Date.now() - 15 * 60000,
+      nextToken: nextToken || undefined, filterPattern: filterPattern || undefined, interleaved: true, limit: 500
+    }));
+    return { events: (result.events || []).map((e) => ({ id: e.eventId, timestamp: e.timestamp, message: e.message, stream: e.logStreamName })), nextToken: result.nextToken };
+  }
+
+  resource(type, name) {
+    const found = this.resources.find((r) => r.type === type && (r.logicalId === name || r.physicalId === name));
+    if (!found) throw new Error(`Unknown ${type.split('::').pop()} resource`);
+    return found;
+  }
+
+  async invoke({ functionName, payload }) {
+    const fn = this.resource('AWS::Lambda::Function', functionName);
+    const input = JSON.parse(payload || '{}');
+    const result = await this.lambda.send(new InvokeCommand({ FunctionName: fn.physicalId, InvocationType: 'RequestResponse', LogType: 'Tail', Payload: Buffer.from(JSON.stringify(input)) }));
+    const output = result.Payload?.length ? Buffer.from(result.Payload).toString('utf8') : '';
+    let parsed = output; try { parsed = JSON.parse(output); } catch {}
+    return { statusCode: result.StatusCode, functionError: result.FunctionError, executedVersion: result.ExecutedVersion,
+      logs: result.LogResult ? Buffer.from(result.LogResult, 'base64').toString('utf8') : '', payload: parsed };
+  }
+
+  async forceColdStart({ functionName }) {
+    const fn = this.resource('AWS::Lambda::Function', functionName);
+    const current = await this.lambda.send(new GetFunctionConfigurationCommand({ FunctionName: fn.physicalId }));
+    const timestamp = new Date().toISOString();
+    await this.lambda.send(new UpdateFunctionConfigurationCommand({ FunctionName: fn.physicalId, Environment: { Variables: { ...(current.Environment?.Variables || {}), COLD_STARTER: timestamp } } }));
+    await waitUntilFunctionUpdated({ client: this.lambda, maxWaitTime: 90 }, { FunctionName: fn.physicalId });
+    return { functionName: fn.logicalId, timestamp };
+  }
+
+  async eventSourceMappings({ functionName }) {
+    const fn = this.resource('AWS::Lambda::Function', functionName); const mappings = [], warnings = []; let marker;
+    // Do not pass FunctionName here. Lambda's filtered result can omit a mapping
+    // when it targets an alias/version; fetch the account's mappings and compare
+    // the unqualified function name ourselves instead.
+    try {
+      do {
+        const page = await this.lambda.send(new ListEventSourceMappingsCommand({ Marker: marker, MaxItems: 100 }));
+        mappings.push(...(page.EventSourceMappings || []).filter((mapping) => matchesFunction(mapping, fn.physicalId)));
+        marker = page.NextMarker;
+      } while (marker);
+    } catch (error) {
+      console.warn(`Could not list event source mappings for ${fn.physicalId}: ${error.message}`);
+      warnings.push(`Lambda could not list mappings: ${error.message}`);
+    }
+    // CloudFormation provides an independent source of truth for mappings in
+    // this stack. Merge it even when List succeeded, since it supplies a full
+    // config object for mappings Lambda may return only as summaries.
+    const deployed = this.resources.filter((resource) => resource.type === 'AWS::Lambda::EventSourceMapping');
+    const inspected = await Promise.all(deployed.map(async (resource) => {
+      try { return await this.lambda.send(new GetEventSourceMappingCommand({ UUID: resource.physicalId })); }
+      catch (error) { warnings.push(`Could not read ${resource.logicalId}: ${error.message}`); return undefined; }
+    }));
+    mappings.push(...inspected.filter((mapping) => mapping && matchesFunction(mapping, fn.physicalId)));
+    return {
+      mappings: [...new Map(mappings.map((mapping) => [mapping.UUID, mapping])).values()].map(mappingSummary),
+      stackMappingCount: deployed.length,
+      warnings
+    };
+  }
+
+  async describeTable({ tableName }) {
+    const table = this.resource('AWS::DynamoDB::Table', tableName);
+    const result = await this.ddbRaw.send(new DescribeTableCommand({ TableName: table.physicalId }));
+    const t = result.Table;
+    return { logicalId: table.logicalId, tableName: table.physicalId, status: t.TableStatus, itemCount: t.ItemCount, sizeBytes: t.TableSizeBytes,
+      keySchema: t.KeySchema || [], attributes: t.AttributeDefinitions || [], indexes: (t.GlobalSecondaryIndexes || []).map((i) => ({ name: i.IndexName, keySchema: i.KeySchema, status: i.IndexStatus, itemCount: i.ItemCount })) };
+  }
+
+  async scanTable(input) {
+    const table = this.resource('AWS::DynamoDB::Table', input.tableName);
+    return this.ddb.send(new ScanCommand({ TableName: table.physicalId, Limit: clampLimit(input.limit), FilterExpression: optional(input.filterExpression),
+      ExpressionAttributeNames: objectOrUndefined(input.expressionNames), ExpressionAttributeValues: objectOrUndefined(input.expressionValues) }));
+  }
+
+  async queryTable(input) {
+    const table = this.resource('AWS::DynamoDB::Table', input.tableName);
+    if (!input.keyConditionExpression?.trim()) throw new Error('A key condition expression is required');
+    return this.ddb.send(new QueryCommand({ TableName: table.physicalId, IndexName: optional(input.indexName), KeyConditionExpression: input.keyConditionExpression,
+      FilterExpression: optional(input.filterExpression), ExpressionAttributeNames: objectOrUndefined(input.expressionNames), ExpressionAttributeValues: objectOrUndefined(input.expressionValues),
+      Limit: clampLimit(input.limit), ScanIndexForward: input.scanIndexForward !== false }));
+  }
+
+  async updateTableItem(input) {
+    const table = this.resource('AWS::DynamoDB::Table', input.tableName);
+    if (!input.key || typeof input.key !== 'object' || Array.isArray(input.key)) throw new Error('A key object is required');
+    if (!input.updateExpression?.trim()) throw new Error('An update expression is required');
+    return this.ddb.send(new UpdateCommand({ TableName: table.physicalId, Key: input.key, UpdateExpression: input.updateExpression,
+      ConditionExpression: optional(input.conditionExpression), ExpressionAttributeNames: objectOrUndefined(input.expressionNames), ExpressionAttributeValues: objectOrUndefined(input.expressionValues), ReturnValues: 'ALL_NEW' }));
+  }
+
+  // Aurora DSQL has no API that returns a connection endpoint: it is derived from
+  // the cluster identifier and its region, which is how the AWS SDK examples connect.
+  async dsqlTarget(clusterName) {
+    const cluster = this.resource('AWS::DSQL::Cluster', clusterName);
+    const arn = cluster.physicalId.startsWith('arn:') ? cluster.physicalId.split(':') : null;
+    const identifier = arn ? cluster.physicalId.split('/').pop() : cluster.physicalId;
+    const region = arn?.[3] || this.region || await this.cf.config.region();
+    if (!region) throw new Error('An AWS region is required to reach an Aurora DSQL cluster');
+    return { logicalId: cluster.logicalId, identifier, region, host: `${identifier}.dsql.${region}.on.aws` };
+  }
+
+  async dsqlSchema({ clusterName }) {
+    const target = await this.dsqlTarget(clusterName);
+    return { ...target, ...(await this.dsql.schema(target)) };
+  }
+
+  async dsqlQuery({ clusterName, sql, limit }) {
+    return this.dsql.query(await this.dsqlTarget(clusterName), { sql, limit });
+  }
+
+  bucket(name) { return this.resource('AWS::S3::Bucket', name); }
+
+  async listBucket({ bucketName, prefix = '', continuationToken }) {
+    const bucket = this.bucket(bucketName);
+    const result = await this.s3.send(new ListObjectsV2Command({ Bucket: bucket.physicalId, Prefix: prefix, Delimiter: '/', ContinuationToken: continuationToken, MaxKeys: 500 }));
+    return { folders: (result.CommonPrefixes || []).map((p) => p.Prefix), files: (result.Contents || []).filter((o) => o.Key !== prefix).map(s3Object), nextToken: result.NextContinuationToken };
+  }
+
+  async searchBucket({ bucketName, query }) {
+    const bucket = this.bucket(bucketName); const needle = String(query || '').toLowerCase();
+    if (needle.length < 2) throw new Error('Enter at least two characters to search');
+    let token; const files = [];
+    do {
+      const result = await this.s3.send(new ListObjectsV2Command({ Bucket: bucket.physicalId, ContinuationToken: token, MaxKeys: 1000 }));
+      files.push(...(result.Contents || []).filter((o) => o.Key.toLowerCase().includes(needle)).map(s3Object)); token = result.NextContinuationToken;
+    } while (token && files.length < 250);
+    return { files: files.slice(0, 250), truncated: Boolean(token) || files.length > 250 };
+  }
+
+  async getBucketObject({ bucketName, key, maxBytes = 25_000_000 }) {
+    const bucket = this.bucket(bucketName);
+    const head = await this.s3.send(new HeadObjectCommand({ Bucket: bucket.physicalId, Key: key }));
+    if ((head.ContentLength || 0) > maxBytes) throw new Error(`File is too large to preview (${Math.ceil(head.ContentLength / 1_000_000)} MB)`);
+    const result = await this.s3.send(new GetObjectCommand({ Bucket: bucket.physicalId, Key: key }));
+    return { buffer: Buffer.from(await result.Body.transformToByteArray()), contentType: result.ContentType || contentTypeFor(key), length: head.ContentLength, modified: head.LastModified, etag: head.ETag };
+  }
+
+  async readResource({ type, resourceName }) {
+    const resource = this.resource(type, resourceName);
+    if (type === 'AWS::Cognito::UserPool') {
+      const [pool, users] = await Promise.all([this.cognito.send(new DescribeUserPoolCommand({ UserPoolId: resource.physicalId })), this.cognito.send(new ListUsersCommand({ UserPoolId: resource.physicalId, Limit: 60 }))]);
+      return { kind: 'cognito', pool: pool.UserPool, users: users.Users || [] };
+    }
+    if (type === 'AWS::SQS::Queue') {
+      const attributes = await this.sqs.send(new GetQueueAttributesCommand({ QueueUrl: resource.physicalId, AttributeNames: ['All'] }));
+      let messages = []; try { messages = (await this.sqs.send(new ReceiveMessageCommand({ QueueUrl: resource.physicalId, MaxNumberOfMessages: 10, VisibilityTimeout: 0, WaitTimeSeconds: 0, AttributeNames: ['All'], MessageAttributeNames: ['All'] }))).Messages || []; } catch {}
+      return { kind: 'sqs', attributes: attributes.Attributes || {}, messages };
+    }
+    if (type === 'AWS::SNS::Topic') {
+      const [attributes, subscriptions] = await Promise.all([this.sns.send(new GetTopicAttributesCommand({ TopicArn: resource.physicalId })), this.sns.send(new ListSubscriptionsByTopicCommand({ TopicArn: resource.physicalId }))]);
+      return { kind: 'sns', attributes: attributes.Attributes || {}, subscriptions: subscriptions.Subscriptions || [] };
+    }
+    if (type === 'AWS::Events::Rule') {
+      const [rule, targets] = await Promise.all([this.events.send(new DescribeRuleCommand({ Name: resource.physicalId })), this.events.send(new ListTargetsByRuleCommand({ Rule: resource.physicalId }))]);
+      return { kind: 'eventbridge', rule, targets: targets.Targets || [] };
+    }
+    if (type === 'AWS::ApiGateway::RestApi' || type === 'AWS::ApiGatewayV2::Api') return this.apiDefinition({ type, resourceName });
+    throw new Error('This resource does not have a reader yet');
+  }
+
+  async searchCognitoUsers({ resourceName, value = '' }) {
+    const resource = this.resource('AWS::Cognito::UserPool', resourceName);
+    const needle = value.trim().toLocaleLowerCase(); let token; const users = []; let scanned = 0;
+    do {
+      const page = await this.cognito.send(new ListUsersCommand({ UserPoolId: resource.physicalId, Limit: 60, PaginationToken: token }));
+      const pageUsers = page.Users || []; scanned += pageUsers.length;
+      users.push(...pageUsers.filter((user) => !needle || [user.Username, ...(user.Attributes || []).map((a) => a.Value)].some((field) => String(field || '').toLocaleLowerCase().includes(needle))));
+      token = page.PaginationToken;
+    } while (token && users.length < 250 && scanned < 5_000);
+    return { users: users.slice(0, 250), scanned, truncated: Boolean(token) || users.length > 250 };
+  }
+
+  async apiDefinition({ type, resourceName }) {
+    const resource = this.resource(type, resourceName);
+    if (type === 'AWS::ApiGateway::RestApi') {
+      const [api, routes, stages] = await Promise.all([this.apiGateway.send(new GetRestApiCommand({ restApiId: resource.physicalId })), this.apiGateway.send(new GetResourcesCommand({ restApiId: resource.physicalId, embed: ['methods'], limit: 500 })), this.apiGateway.send(new GetStagesCommand({ restApiId: resource.physicalId }))]);
+      return { kind: 'rest-api', logicalId: resource.logicalId, apiId: resource.physicalId, name: api.name, endpoint: `https://${resource.physicalId}.execute-api.${this.region}.amazonaws.com`, stages: (stages.item || []).map((s) => s.stageName), routes: (routes.items || []).flatMap((r) => Object.keys(r.resourceMethods || {}).map((method) => ({ method, path: r.path }))) };
+    }
+    const [api, routes, stages] = await Promise.all([this.apiGatewayV2.send(new GetApiCommand({ ApiId: resource.physicalId })), this.apiGatewayV2.send(new GetRoutesCommand({ ApiId: resource.physicalId, MaxResults: '500' })), this.apiGatewayV2.send(new GetV2StagesCommand({ ApiId: resource.physicalId, MaxResults: '500' }))]);
+    return { kind: 'http-api', logicalId: resource.logicalId, apiId: resource.physicalId, name: api.Name, endpoint: api.ApiEndpoint, stages: (stages.Items || []).map((s) => s.StageName), routes: (routes.Items || []).map((r) => { const [method, ...path] = r.RouteKey.split(' '); return { method, path: path.join(' ') || '$default', routeKey: r.RouteKey }; }) };
+  }
+
+  async invokeApi({ type, resourceName, stage, method, path, routePath, query, headers, body }) {
+    const definition = await this.apiDefinition({ type, resourceName });
+    const route = definition.routes.find((r) => r.path === (routePath || path) && (r.method === method || r.method === 'ANY' || method === 'ANY'));
+    if (!route) throw new Error('That method and route are not part of this API gateway schema');
+    const stagePart = stage && stage !== '$default' ? `/${encodeURIComponent(stage)}` : '';
+    const url = new URL(`${definition.endpoint}${stagePart}${path.startsWith('/') ? path : `/${path}`}`);
+    for (const [key, value] of Object.entries(query || {})) if (value !== '') url.searchParams.set(key, value);
+    const response = await fetch(url, { method, headers: headers || {}, body: ['GET','HEAD'].includes(method) ? undefined : body || undefined, signal: AbortSignal.timeout(30_000) });
+    const text = (await response.text()).slice(0, 1_000_000); let parsed; try { parsed = JSON.parse(text); } catch {}
+    return { status: response.status, statusText: response.statusText, headers: Object.fromEntries(response.headers), body: parsed ?? text, truncated: text.length >= 1_000_000 };
+  }
+}
+
+function optional(value) { return typeof value === 'string' && value.trim() ? value.trim() : undefined; }
+function objectOrUndefined(value) { return value && typeof value === 'object' && Object.keys(value).length ? value : undefined; }
+function clampLimit(value) { return Math.min(Math.max(Number(value) || 50, 1), 250); }
+function s3Object(o) { return { key: o.Key, size: o.Size, modified: o.LastModified, etag: o.ETag, storageClass: o.StorageClass }; }
+function contentTypeFor(key) { const ext=key.toLowerCase().split('.').pop();return ({pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',svg:'image/svg+xml',txt:'text/plain',md:'text/markdown',json:'application/json',csv:'text/csv',html:'text/plain',xml:'text/xml'}[ext]||'application/octet-stream'); }
+function lambdaName(value) { return String(value || '').match(/:function:([^:]+)/)?.[1] || String(value || ''); }
+function matchesFunction(mapping, functionName) { return lambdaName(mapping.FunctionArn) === lambdaName(functionName); }
+function mappingSummary(m) { return { uuid: m.UUID, state: m.State, stateTransitionReason: m.StateTransitionReason, eventSourceArn: m.EventSourceArn, batchSize: m.BatchSize, maximumBatchingWindowInSeconds: m.MaximumBatchingWindowInSeconds, parallelizationFactor: m.ParallelizationFactor, startingPosition: m.StartingPosition, maximumRetryAttempts: m.MaximumRetryAttempts, maximumRecordAgeInSeconds: m.MaximumRecordAgeInSeconds, bisectBatchOnFunctionError: m.BisectBatchOnFunctionError, functionResponseTypes: m.FunctionResponseTypes, filterCriteria: m.FilterCriteria, destinationConfig: m.DestinationConfig, lastModified: m.LastModified }; }

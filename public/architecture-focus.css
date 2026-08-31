@@ -1,0 +1,5 @@
+.architecture-canvas.focus-active .architecture-node:not(.is-related),.architecture-canvas.focus-active .architecture-edge-label:not(.is-related){opacity:.13;filter:blur(1.4px);transition:opacity .16s ease,filter .16s ease}
+.architecture-canvas.focus-active .architecture-line:not(.is-related),.architecture-canvas.focus-active .architecture-trunk:not(.is-related){opacity:0;transition:opacity .16s ease}
+.architecture-canvas.focus-active .architecture-line:not(.is-related){marker-end:none}
+.architecture-canvas.focus-active .is-related{opacity:1;filter:none;transition:opacity .16s ease,filter .16s ease}
+.architecture-canvas.focus-active .architecture-node.is-related{border-color:#82b9ff;box-shadow:0 0 0 1px #82b9ff55,0 0 20px #438cf333}

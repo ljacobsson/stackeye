@@ -1,0 +1,28 @@
+.brand {
+  height: 57px;
+  padding: 0 8px 28px;
+}
+
+.brand img {
+  display: block;
+  width: 174px;
+  height: auto;
+  max-height: 46px;
+  object-fit: contain;
+  object-position: left center;
+}
+
+@media (max-width: 850px) {
+  .brand {
+    padding: 0 5px 30px;
+    overflow: hidden;
+  }
+
+  .brand img {
+    width: 34px;
+    height: 34px;
+    max-height: none;
+    object-fit: cover;
+    object-position: left;
+  }
+}

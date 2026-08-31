@@ -7,14 +7,18 @@ import { ApiGatewayV2Client, GetApiCommand, GetRoutesCommand, GetStagesCommand a
 import { CognitoIdentityProviderClient, DescribeUserPoolCommand, ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { SQSClient, GetQueueAttributesCommand, ReceiveMessageCommand } from '@aws-sdk/client-sqs';
 import { SNSClient, GetTopicAttributesCommand, ListSubscriptionsByTopicCommand } from '@aws-sdk/client-sns';
-import { EventBridgeClient, DescribeRuleCommand, ListTargetsByRuleCommand } from '@aws-sdk/client-eventbridge';
+import { EventBridgeClient, DescribeRuleCommand, ListTargetsByRuleCommand, TestEventPatternCommand } from '@aws-sdk/client-eventbridge';
 import { LambdaClient, InvokeCommand, GetFunctionConfigurationCommand, UpdateFunctionConfigurationCommand, ListEventSourceMappingsCommand, GetEventSourceMappingCommand, waitUntilFunctionUpdated } from '@aws-sdk/client-lambda';
 import { DynamoDBClient, DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, ScanCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, ListObjectsV2Command, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { SFNClient, DescribeStateMachineCommand, TestStateCommand } from '@aws-sdk/client-sfn';
 import { fromIni } from '@aws-sdk/credential-providers';
 import { DsqlReader } from './dsql.js';
+import { isArchiveKey, archiveEntries, archiveSummary, archiveLevel, searchArchive, readArchiveEntry, resolveArchive } from './archive.js';
+
+const ARCHIVE_MAX_BYTES = 150_000_000, ARCHIVE_CACHE_SLOTS = 4, ARCHIVE_CACHE_BYTES = 250_000_000, ARCHIVE_SEARCH_LIMIT = 500;
 
 export class AwsData {
   constructor({ region, profile, stackName, templateResources, dsqlUser }) {
@@ -23,7 +27,7 @@ export class AwsData {
     this.logs = new CloudWatchLogsClient(common); this.sts = new STSClient(common); this.apiGateway = new APIGatewayClient(common);
     this.lambda = new LambdaClient(common); this.ddbRaw = new DynamoDBClient(common); this.ddb = DynamoDBDocumentClient.from(this.ddbRaw, { marshallOptions: { removeUndefinedValues: true } });
     this.s3 = new S3Client(common);
-    this.cognito = new CognitoIdentityProviderClient(common); this.sqs = new SQSClient(common); this.sns = new SNSClient(common); this.events = new EventBridgeClient(common); this.apiGatewayV2 = new ApiGatewayV2Client(common);
+    this.cognito = new CognitoIdentityProviderClient(common); this.sqs = new SQSClient(common); this.sns = new SNSClient(common); this.events = new EventBridgeClient(common); this.apiGatewayV2 = new ApiGatewayV2Client(common); this.stepFunctions = new SFNClient(common);
     this.dsql = new DsqlReader({ profile, user: dsqlUser });
     this.region = region; this.stackName = stackName; this.templateResources = templateResources;
   }
@@ -35,6 +39,7 @@ export class AwsData {
       this.stackResources()
     ]);
     const found = stack.Stacks?.[0];
+    this.account = identity.Account;
     this.resources = deployedResources.map((r) => ({
       logicalId: r.LogicalResourceId, physicalId: r.PhysicalResourceId, type: r.ResourceType,
       status: r.ResourceStatus, updatedAt: r.Timestamp
@@ -239,6 +244,57 @@ export class AwsData {
     return { buffer: Buffer.from(await result.Body.transformToByteArray()), contentType: result.ContentType || contentTypeFor(key), length: head.ContentLength, modified: head.LastModified, etag: head.ETag };
   }
 
+  // Zip browsing needs the whole object in memory, so keep the most recently opened archives
+  // around: walking folders inside one archive would otherwise re-download it on every click.
+  async archiveBuffer({ bucketName, key, trail = [], maxBytes = ARCHIVE_MAX_BYTES }) {
+    const bucket = this.bucket(bucketName);
+    if (!isArchiveKey(key)) throw new Error(`“${key}” is not a zip archive`);
+    const head = await this.s3.send(new HeadObjectCommand({ Bucket: bucket.physicalId, Key: key }));
+    if ((head.ContentLength || 0) > maxBytes) throw new Error(`This archive is too large to browse (${Math.ceil(head.ContentLength / 1_000_000)} MB)`);
+    const outerKey = [bucket.physicalId, key, head.ETag].join(' ');
+    let buffer = this.cachedArchive(outerKey);
+    if (!buffer) {
+      const result = await this.s3.send(new GetObjectCommand({ Bucket: bucket.physicalId, Key: key }));
+      buffer = this.rememberArchive(outerKey, Buffer.from(await result.Body.transformToByteArray()));
+    }
+    if (!trail.length) return buffer;
+    const nestedKey = [outerKey, ...trail].join(' ');
+    return this.cachedArchive(nestedKey) || this.rememberArchive(nestedKey, resolveArchive(buffer, trail));
+  }
+
+  cachedArchive(cacheKey) {
+    const cache = (this.archiveCache ||= new Map()); const hit = cache.get(cacheKey);
+    if (hit) { cache.delete(cacheKey); cache.set(cacheKey, hit); } // re-insert so the newest entry sorts last
+    return hit;
+  }
+
+  rememberArchive(cacheKey, buffer) {
+    const cache = (this.archiveCache ||= new Map());
+    cache.set(cacheKey, buffer);
+    let total = 0; for (const value of cache.values()) total += value.length;
+    for (const oldest of [...cache.keys()]) {
+      if (cache.size <= ARCHIVE_CACHE_SLOTS && total <= ARCHIVE_CACHE_BYTES) break;
+      if (oldest === cacheKey) continue;
+      total -= cache.get(oldest).length; cache.delete(oldest);
+    }
+    return buffer;
+  }
+
+  async listArchive({ bucketName, key, trail = [], prefix = '', query }) {
+    const entries = archiveEntries(await this.archiveBuffer({ bucketName, key, trail }));
+    const archive = { key, trail, ...archiveSummary(entries) };
+    if (query) {
+      const matches = searchArchive(entries, query);
+      return { archive, prefix: '', query, folders: [], files: matches.slice(0, ARCHIVE_SEARCH_LIMIT), truncated: matches.length > ARCHIVE_SEARCH_LIMIT };
+    }
+    return { archive, prefix, ...archiveLevel(entries, prefix) };
+  }
+
+  async getArchiveEntry({ bucketName, key, trail = [], entryPath }) {
+    const buffer = readArchiveEntry(await this.archiveBuffer({ bucketName, key, trail }), entryPath);
+    return { buffer, contentType: contentTypeFor(entryPath), length: buffer.length };
+  }
+
   async readResource({ type, resourceName }) {
     const resource = this.resource(type, resourceName);
     if (type === 'AWS::Cognito::UserPool') {
@@ -255,11 +311,61 @@ export class AwsData {
       return { kind: 'sns', attributes: attributes.Attributes || {}, subscriptions: subscriptions.Subscriptions || [] };
     }
     if (type === 'AWS::Events::Rule') {
-      const [rule, targets] = await Promise.all([this.events.send(new DescribeRuleCommand({ Name: resource.physicalId })), this.events.send(new ListTargetsByRuleCommand({ Rule: resource.physicalId }))]);
+      const { Name, EventBusName } = this.ruleReference(resource);
+      const [rule, targets] = await Promise.all([this.events.send(new DescribeRuleCommand({ Name, EventBusName })), this.events.send(new ListTargetsByRuleCommand({ Rule: Name, EventBusName }))]);
       return { kind: 'eventbridge', rule, targets: targets.Targets || [] };
+    }
+    if (type === 'AWS::StepFunctions::StateMachine') {
+      const machine = await this.stepFunctions.send(new DescribeStateMachineCommand({ stateMachineArn: resource.physicalId }));
+      let definition; try { definition = JSON.parse(machine.definition); } catch { throw new Error('The deployed state-machine definition is not valid JSON'); }
+      return { kind: 'state-machine', logicalId: resource.logicalId, stateMachineArn: resource.physicalId, name: machine.name, status: machine.status, type: machine.type, roleArn: machine.roleArn, creationDate: machine.creationDate, loggingConfiguration: machine.loggingConfiguration, tracingConfiguration: machine.tracingConfiguration, definition };
     }
     if (type === 'AWS::ApiGateway::RestApi' || type === 'AWS::ApiGatewayV2::Api') return this.apiDefinition({ type, resourceName });
     throw new Error('This resource does not have a reader yet');
+  }
+
+  // CloudFormation reports a rule on a custom bus as "<bus>|<rule>". Neither name can
+  // contain a pipe, so the separator is unambiguous.
+  ruleReference(resource) {
+    const parts = resource.physicalId.split('|');
+    return parts.length > 1 ? { Name: parts.slice(1).join('|'), EventBusName: parts[0] } : { Name: resource.physicalId, EventBusName: 'default' };
+  }
+
+  // EventBridge rejects events that are missing envelope fields, so the tester fills the
+  // gaps rather than bouncing a ValidationException back at whoever wrote the detail.
+  eventEnvelope(event) {
+    const defaults = {
+      id: '00000000-1111-2222-3333-444444444444', account: this.account || '123456789012',
+      source: 'stackeye.test', time: new Date().toISOString(), region: this.region || 'us-east-1',
+      resources: [], 'detail-type': 'Test event', detail: {}
+    };
+    const added = Object.keys(defaults).filter((key) => event[key] === undefined);
+    return { event: { version: '0', ...defaults, ...event }, added };
+  }
+
+  async testEventPattern({ resourceName, event }) {
+    const resource = this.resource('AWS::Events::Rule', resourceName);
+    const rule = await this.events.send(new DescribeRuleCommand(this.ruleReference(resource)));
+    if (!rule.EventPattern) throw new Error('This rule runs on a schedule, so it has no event pattern to test');
+    let parsed;
+    try { parsed = typeof event === 'string' ? JSON.parse(event || '{}') : event; }
+    catch { throw new Error('The test event must be valid JSON'); }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('The test event must be a JSON object');
+    const { event: complete, added } = this.eventEnvelope(parsed);
+    const result = await this.events.send(new TestEventPatternCommand({ EventPattern: rule.EventPattern, Event: JSON.stringify(complete) }));
+    return { matches: Boolean(result.Result), event: complete, added, pattern: rule.EventPattern };
+  }
+
+  async testState({ resourceName, stateName, input = '{}', inspectionLevel = 'INFO' }) {
+    const resource = this.resource('AWS::StepFunctions::StateMachine', resourceName);
+    const machine = await this.stepFunctions.send(new DescribeStateMachineCommand({ stateMachineArn: resource.physicalId }));
+    let definition, parsedInput;
+    try { definition = JSON.parse(machine.definition); } catch { throw new Error('The deployed state-machine definition is not valid JSON'); }
+    const state = definition?.States?.[stateName];
+    if (!state) throw new Error(`State “${stateName}” was not found in this deployed state machine`);
+    try { parsedInput = typeof input === 'string' ? JSON.parse(input || '{}') : input; } catch { throw new Error('State input must be valid JSON'); }
+    const level = ['INFO','DEBUG','TRACE'].includes(inspectionLevel) ? inspectionLevel : 'INFO';
+    return this.stepFunctions.send(new TestStateCommand({ definition: JSON.stringify(state), input: JSON.stringify(parsedInput), inspectionLevel: level, roleArn: machine.roleArn }));
   }
 
   async searchCognitoUsers({ resourceName, value = '' }) {

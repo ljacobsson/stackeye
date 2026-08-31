@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>StackEye · guided tour</title>
+<style>
+:root{
+  --bg:#070a0f;--side:#0c1018;--panel:#111722;--line:#202938;--muted:#7d899b;--text:#f3f6fa;
+  --blue:#63a4ff;--cyan:#55e6c1;--amber:#ffcb66;
+  --stage-max:1440px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;font-size:15px;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:var(--stage-max);margin:0 auto;padding:22px 20px 56px}
+
+/* ---------- header ---------- */
+.top{display:flex;align-items:baseline;gap:14px;padding:0 2px 16px}
+.brand{display:flex;align-items:center;gap:11px;font-size:20px;letter-spacing:-.5px}
+.brand span{color:var(--cyan)}
+.pulse{width:11px;height:11px;background:var(--cyan);border-radius:3px;
+  box-shadow:0 0 20px #55e6c188;transform:rotate(45deg)}
+.brand em{font-style:normal;color:var(--muted);font-size:12px;letter-spacing:1.6px;
+  text-transform:uppercase;margin-left:4px}
+.top .spacer{flex:1}
+.top .act-now{color:var(--muted);font-size:12px;letter-spacing:1.4px;text-transform:uppercase}
+
+/* ---------- stage ---------- */
+.stage{position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;border-radius:12px;
+  background:#04060a;border:1px solid var(--line);
+  box-shadow:0 30px 80px -40px #000,0 0 0 1px #ffffff08 inset}
+.scene{position:absolute;top:0;left:0;width:1920px;height:1080px;transform-origin:0 0;
+  transition:transform 760ms cubic-bezier(.22,.61,.36,1)}
+.scene.no-anim{transition:none}
+.scene video{display:block;width:1920px;height:1080px;background:#04060a}
+
+/* dim + highlights live in video pixel space, so they track the zoom exactly */
+.dim{position:absolute;top:0;left:0;width:1920px;height:1080px;pointer-events:none;
+  opacity:0;transition:opacity 500ms ease}
+.dim.on{opacity:1}
+.hls{position:absolute;top:0;left:0;width:1920px;height:1080px;pointer-events:none}
+.hl{position:absolute;border:calc(2.5px / var(--k)) solid var(--tone,var(--cyan));
+  border-radius:calc(8px / var(--k));
+  box-shadow:0 0 calc(26px / var(--k)) color-mix(in srgb,var(--tone,var(--cyan)) 45%,transparent),
+             inset 0 0 calc(30px / var(--k)) color-mix(in srgb,var(--tone,var(--cyan)) 12%,transparent);
+  animation:ring 2.3s ease-in-out infinite;opacity:0;transform:scale(1.012);
+  transition:opacity 420ms ease,transform 420ms cubic-bezier(.22,.61,.36,1)}
+.hl.in{opacity:1;transform:none}
+@keyframes ring{0%,100%{filter:brightness(1)}50%{filter:brightness(1.55)}}
+.hl b{position:absolute;left:calc(-2.5px / var(--k));bottom:100%;
+  margin-bottom:calc(7px / var(--k));white-space:nowrap;font-weight:600;
+  font-size:calc(15px / var(--k));line-height:1;letter-spacing:.2px;
+  padding:calc(6px / var(--k)) calc(9px / var(--k));border-radius:calc(5px / var(--k));
+  background:var(--tone,var(--cyan));color:#04060a}
+.hl.below b{bottom:auto;top:100%;margin:calc(7px / var(--k)) 0 0}
+.hl.rt b{left:auto;right:calc(-2.5px / var(--k))}   /* grow leftwards near the frame edge */
+
+/* ---------- caption ---------- */
+.cap{position:absolute;margin:0;max-width:min(48%,560px);z-index:3;
+  opacity:0;transform:translateY(8px);transition:opacity 380ms ease,transform 380ms ease;
+  pointer-events:none}
+.cap.in{opacity:1;transform:none}
+.cap.bl{left:26px;bottom:26px}
+.cap.br{right:26px;bottom:26px}
+.cap.tl{left:26px;top:26px}
+.cap.tr{right:26px;top:26px}
+.cap.center{left:50%;top:50%;transform:translate(-50%,calc(-50% + 8px));max-width:min(72%,720px);text-align:center}
+.cap.center.in{transform:translate(-50%,-50%)}
+/* deliberately opaque: the caption has to stay readable over any frame */
+.card{background:#101825;border:1px solid #2c3a4e;border-left:3px solid var(--cyan);
+  border-radius:10px;padding:16px 19px 17px;
+  box-shadow:0 26px 70px -20px #000,0 6px 18px -8px #000c,0 0 0 1px #ffffff0d inset}
+.card .kicker{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+.card .num{flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:5px;
+  background:var(--cyan);color:#04060a;font:700 12px/1 ui-monospace,monospace}
+.card .act{color:var(--cyan);font-size:10.5px;letter-spacing:1.7px;text-transform:uppercase;font-weight:600}
+.card h2{margin:0 0 7px;font-size:19px;line-height:1.25;letter-spacing:-.3px}
+.card p{margin:0;color:#b6c1d1;font-size:13.5px;line-height:1.55}
+.card p code,.card p kbd{font:12.5px ui-monospace,monospace;color:var(--amber);
+  background:#ffcb6612;padding:1px 4px;border-radius:3px;border:0}
+
+/* hold indicator */
+.holdbar{position:absolute;left:0;top:0;height:2px;width:100%;z-index:4;opacity:0;transition:opacity .2s}
+.holdbar.on{opacity:1}
+.holdbar i{display:block;height:100%;width:0;background:var(--cyan);box-shadow:0 0 12px var(--cyan)}
+.paused-note{position:absolute;right:22px;top:20px;z-index:4;color:var(--cyan);font-size:10.5px;
+  letter-spacing:1.6px;text-transform:uppercase;font-weight:600;opacity:0;transition:opacity .25s;
+  background:#55e6c114;border:1px solid #55e6c13a;padding:5px 10px;border-radius:20px}
+.paused-note.on{opacity:1}
+.cap.tr.in ~ .paused-note.on,.cap.tl.in ~ .paused-note.on{opacity:.35}
+
+.bigplay{position:absolute;inset:0;z-index:6;display:grid;place-items:center;border:0;cursor:pointer;
+  background:radial-gradient(60% 60% at 50% 50%,#04060abb,#04060ae8);color:var(--text);font:inherit}
+.bigplay.gone{display:none}
+.bigplay div{display:grid;gap:12px;justify-items:center}
+.bigplay .disc{width:74px;height:74px;border-radius:50%;background:var(--cyan);color:#04060a;
+  display:grid;place-items:center;font-size:27px;padding-left:5px;
+  box-shadow:0 0 0 12px #55e6c11a,0 0 44px #55e6c155}
+.bigplay strong{font-size:17px;letter-spacing:-.2px}
+.bigplay small{color:var(--muted);font-size:12.5px;max-width:34ch;text-align:center;line-height:1.5}
+
+/* ---------- scrubber ---------- */
+.scrub{position:relative;height:26px;margin:10px 2px 0;cursor:pointer}
+.scrub-track{position:absolute;top:11px;left:0;right:0;height:4px;border-radius:3px;background:#1b2330}
+.scrub-fill{position:absolute;top:11px;left:0;height:4px;border-radius:3px;background:var(--cyan);width:0}
+.scrub-tick{position:absolute;top:6px;width:2px;height:14px;border-radius:2px;background:#33405433}
+.scrub-tick.done{background:#55e6c166}
+
+/* ---------- controls ---------- */
+.bar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 2px 0}
+.bar button,.bar select{color:var(--text);background:#131925;border:1px solid var(--line);
+  border-radius:7px;padding:8px 12px;font:inherit;font-size:13px;cursor:pointer}
+.bar button:hover,.bar select:hover{background:#182031;border-color:#2d3949}
+.bar button.primary{background:#55e6c114;border-color:#55e6c144;color:var(--cyan)}
+.bar .time{color:var(--muted);font:12.5px ui-monospace,monospace;margin-left:4px}
+.bar .spacer{flex:1}
+.tog{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12.5px;cursor:pointer;
+  padding:7px 10px;border:1px solid var(--line);border-radius:7px;user-select:none}
+.tog:hover{color:var(--text)}
+.tog input{accent-color:var(--cyan);margin:0}
+.tog:has(input:checked){color:var(--text);border-color:#2d3949;background:#131925}
+
+/* ---------- chapter rail ---------- */
+.rail{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;
+  margin:22px 2px 0;padding:0;list-style:none}
+.rail section{min-width:0}
+.rail h4{margin:0 0 9px;color:var(--muted);font-size:10.5px;letter-spacing:1.6px;
+  text-transform:uppercase;font-weight:600}
+.rail ol{margin:0;padding:0;list-style:none;display:grid;gap:4px}
+.rail button{display:grid;grid-template-columns:20px 1fr;gap:9px;align-items:center;width:100%;
+  text-align:left;color:var(--muted);background:none;border:0;border-radius:6px;padding:7px 8px;
+  font:inherit;font-size:13px;cursor:pointer}
+.rail button:hover{color:var(--text);background:#141b28}
+.rail button b{font:600 11px/1 ui-monospace,monospace;color:#4d5a6e;text-align:right}
+.rail button.on{color:var(--text);background:#171f2d;box-shadow:inset 2px 0 var(--cyan)}
+.rail button.on b{color:var(--cyan)}
+.rail button.seen b{color:#6d7a8e}
+
+.hint{margin:20px 2px 0;color:#5c6879;font-size:12px;line-height:1.7}
+.hint kbd{font:11.5px ui-monospace,monospace;background:#131925;border:1px solid var(--line);
+  border-bottom-width:2px;border-radius:4px;padding:1px 5px;color:var(--muted)}
+.miss{margin:18px 2px 0;padding:13px 15px;border:1px solid #ff6d7d44;background:#ff6d7d0f;
+  border-radius:9px;color:#ffb3bb;font-size:13px;line-height:1.55;display:none}
+.miss.on{display:block}
+
+@media (max-width:760px){
+  .cap{max-width:calc(100% - 36px)}
+  .cap.bl,.cap.br{left:18px;right:18px;bottom:18px}
+  .cap.tl,.cap.tr{left:18px;right:18px;top:18px}
+  .card h2{font-size:16px}.card p{font-size:12.5px}
+}
+@media (prefers-reduced-motion:reduce){
+  .scene,.hl,.cap{transition-duration:1ms}
+  .hl{animation:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div class="brand"><i class="pulse"></i><strong>Stack<span>Eye</span></strong><em>guided tour</em></div>
+    <div class="spacer"></div>
+    <div class="act-now" id="actNow"></div>
+  </div>
+
+  <div class="stage" id="stage">
+    <div class="scene" id="scene">
+      <video id="vid" src="stackeye.mp4" preload="auto" playsinline muted></video>
+      <svg class="dim" id="dim" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true">
+        <defs><mask id="dimMask" maskUnits="userSpaceOnUse" x="0" y="0" width="1920" height="1080">
+          <rect width="1920" height="1080" fill="#fff"></rect>
+          <g id="dimHoles"></g>
+        </mask></defs>
+        <rect width="1920" height="1080" fill="#03060c" opacity=".5" mask="url(#dimMask)"></rect>
+      </svg>
+      <div class="hls" id="hls"></div>
+    </div>
+
+    <figure class="cap" id="cap">
+      <div class="card">
+        <div class="kicker"><span class="num" id="capNum">1</span><span class="act" id="capAct"></span></div>
+        <h2 id="capTitle"></h2>
+        <p id="capBody"></p>
+      </div>
+    </figure>
+
+    <div class="holdbar" id="holdbar"><i id="holdFill"></i></div>
+    <div class="paused-note" id="pausedNote">paused to read</div>
+
+    <button class="bigplay" id="bigplay">
+      <div>
+        <span class="disc">▶</span>
+        <strong>Play the annotated walkthrough</strong>
+        <small><span id="stopCount">21</span> stops. The video pauses at each one so you can read, then plays the action zoomed in.</small>
+      </div>
+    </button>
+  </div>
+
+  <div class="scrub" id="scrub">
+    <div class="scrub-track"></div>
+    <div class="scrub-fill" id="scrubFill"></div>
+    <div id="ticks"></div>
+  </div>
+
+  <div class="bar">
+    <button class="primary" id="btnPlay">▶ Play</button>
+    <button id="btnPrev">↑ Prev</button>
+    <button id="btnNext">Next ↓</button>
+    <span class="time" id="time">0:00 / 0:00</span>
+    <span class="spacer"></span>
+    <label class="tog"><input type="checkbox" id="togHold" checked> Pause to read</label>
+    <label class="tog"><input type="checkbox" id="togZoom" checked> Zoom</label>
+    <label class="tog"><input type="checkbox" id="togOverlay" checked> Annotations</label>
+    <select id="speed" aria-label="Playback speed">
+      <option value="0.5">0.5×</option>
+      <option value="0.75">0.75×</option>
+      <option value="1" selected>1×</option>
+      <option value="1.5">1.5×</option>
+      <option value="2">2×</option>
+    </select>
+  </div>
+
+  <div class="rail" id="rail"></div>
+
+  <p class="hint">
+    <kbd>Space</kbd> play / pause &nbsp;·&nbsp; <kbd>←</kbd> <kbd>→</kbd> previous / next stop &nbsp;·&nbsp;
+    <kbd>Z</kbd> toggle zoom &nbsp;·&nbsp; <kbd>A</kbd> toggle annotations &nbsp;·&nbsp;
+    <kbd>P</kbd> toggle pause-to-read
+  </p>
+
+  <div class="miss" id="miss">
+    Couldn’t load <code>stackeye.mp4</code>. This page expects to sit in the same folder as the video —
+    open it from <code>public/</code> (double-clicking the file works, no server needed).
+  </div>
+</div>
+
+<script>
+const VW = 1920, VH = 1080;
+
+/* ------------------------------------------------------------------ *
+ * Tour timeline. Rects are in source-video pixels (1920x1080).
+ * at    = video timestamp where the stop begins
+ * hold  = seconds the video pauses so the caption can be read
+ * zoom  = region to frame (null = whole frame)
+ * hl    = highlight boxes, optional label + tone ('cyan' | 'amber')
+ * pos   = caption placement: bl | br | tl | tr | center
+ * ------------------------------------------------------------------ */
+const TOUR = [
+  { act:'Stack overview', tag:'One screen', at:0.10, hold:5.0, pos:'br',
+    title:'One stack, one screen',
+    body:'StackEye points at a stack you have already deployed and rolls up the numbers that matter — invocations, error rate, average duration, throttles — instead of six CloudWatch tabs.',
+    zoom:{x:250,y:190,w:1100,h:400},
+    hl:[{x:262,y:215,w:1075,h:120,label:'live from CloudWatch'}] },
+
+  { act:'Stack overview', tag:'Resource rail', at:1.20, hold:4.5, pos:'br',
+    title:'Navigate by resource, not by service',
+    body:'The rail lists what is actually in this stack: the REST API, the Aurora DSQL cluster, every Lambda. Click one and you get a workbench built for that resource type.',
+    zoom:{x:0,y:140,w:980,h:551},
+    hl:[{x:14,y:186,w:196,h:132},{x:14,y:336,w:196,h:350,label:'resources in this stack'}] },
+
+  { act:'Architecture', tag:'Inferred diagram', at:2.30, hold:5.0, pos:'br',
+    title:'The diagram renders itself from the stack resources',
+    body:'StackEye reads the deployment template and draws the wiring — which route triggers which function, and which function touches which bucket. Redeploy and it redraws itself.',
+    zoom:{x:345,y:300,w:1070,h:602},
+    hl:[{x:363,y:353,w:174,h:80},{x:923,y:353,w:174,h:80},
+        {x:1203,y:353,w:174,h:80,label:'route → function → bucket'}] },
+
+  { act:'Architecture', tag:'Blast radius', at:5.90, hold:4.5, pos:'bl',
+    title:'Hover a node to see its blast radius',
+    body:'Pointing at one resource dims everything unrelated and lights up only what actually connects to it — the quick answer to “what breaks if I change this?”',
+    zoom:{x:340,y:340,w:1090,h:613}, hl:[] },
+
+  { act:'S3 explorer', tag:'Browse objects', at:11.60, hold:4.5, pos:'br',
+    title:'Browse your S3 buckets',
+    body:'Real keys, real sizes, real prefixes — fetched with your own AWS credentials. No public access, and no presigned link left lying around afterwards.',
+    zoom:{x:255,y:290,w:900,h:506},
+    hl:[{x:262,y:346,w:603,h:38},{x:262,y:396,w:603,h:290,label:'objects under extraction/'}] },
+
+  { act:'S3 explorer', tag:'PDF preview', at:15.40, hold:4.5, pos:'bl',
+    title:'Preview the file in place',
+    body:'Click a PDF and it renders in the browser. Nothing lands on your laptop, and the object never leaves your account.',
+    zoom:{x:890,y:295,w:1010,h:568},
+    hl:[{x:898,y:348,w:300,h:46},{x:1773,y:353,w:96,h:34,label:'optional',tone:'amber'}] },
+
+  { act:'Assistant reads a PDF', tag:'Has context', at:16.80, hold:5.0, pos:'bl',
+    title:'An assistant that can already see the page',
+    body:'Open it anywhere in StackEye and it knows where you are. It spotted an S3 page and picked a Bedrock model that can read PDFs and images — and the model stays yours to change.',
+    zoom:{x:1300,y:130,w:620,h:349},
+    hl:[{x:1478,y:181,w:384,h:29},{x:1862,y:184,w:50,h:23,label:'context: s3 page',tone:'amber'}] },
+
+  { act:'Assistant reads a PDF', tag:'File attached', at:18.60, hold:4.5, pos:'tl',
+    title:'The file you are looking at is the attachment',
+    body:'The PDF on screen is handed to the model straight from S3. No download, no re-upload, no temporary copy sitting anywhere.',
+    zoom:{x:1300,y:731,w:620,h:349},
+    hl:[{x:1478,y:885,w:426,h:28,label:'attached from S3'}] },
+
+  { act:'Assistant reads a PDF', tag:'“explain this”', at:21.30, hold:4.0, pos:'tl',
+    title:'Ask anything about the object',
+    body:'The page you are on and the attached drawing are already in the request, so “explain this” is enough — no need to spell out which file you mean.',
+    zoom:{x:1300,y:731,w:620,h:349},
+    hl:[{x:1478,y:933,w:342,h:100},{x:1826,y:937,w:84,h:92,label:'ask',tone:'amber'}] },
+
+  /* no caption here on purpose — the highlight label carries it */
+  { act:'Assistant reads a PDF', tag:'Reads the drawing', at:29.80, hold:3.0, pos:'bl',
+    zoom:{x:1300,y:300,w:620,h:349},
+    hl:[{x:1480,y:346,w:388,h:128,label:'read off the drawing'}] },
+
+  { act:'Assistant reads a PDF', tag:'Spec sheet', at:37.10, hold:3.0, pos:'bl',
+    zoom:{x:1300,y:240,w:620,h:349},
+    hl:[{x:1480,y:292,w:392,h:94},{x:1488,y:418,w:384,h:122,label:'extracted fields'}] },
+
+  { act:'Aurora DSQL', tag:'DSQL console', at:45.10, hold:5.0, pos:'bl',
+    title:'A SQL console for the database in your stack',
+    body:'StackEye finds the Aurora DSQL cluster in the stack and signs a short-lived IAM token to connect. No psql, no tunnel, no password to store.',
+    zoom:{x:250,y:200,w:960,h:540},
+    hl:[{x:460,y:290,w:538,h:36,label:'endpoint · role'}] },
+
+  { act:'Aurora DSQL', tag:'Live schema', at:45.80, hold:4.5, pos:'br',
+    title:'Live schema, one click to query',
+    body:'Tables and columns read from the cluster right now. The ▷ beside a table drops a SELECT into the editor, and Tab completes column names.',
+    zoom:{x:250,y:350,w:730,h:411},
+    hl:[{x:262,y:405,w:300,h:398,label:'live from the cluster'}] },
+
+  { act:'Aurora DSQL', tag:'English → SQL', at:51.00, hold:5.0, pos:'tl',
+    title:'Describe the query instead of writing it',
+    body:'“show all assets larger than 1mb that was uploaded in the past week.” The assistant has the schema, so it knows there is an assets table with size_bytes and created_at.',
+    zoom:{x:1300,y:731,w:620,h:349},
+    hl:[{x:1478,y:933,w:342,h:100,label:'plain English'}] },
+
+  { act:'Aurora DSQL', tag:'Draft first', at:63.40, hold:5.5, pos:'bl',
+    title:'SQL you get to read before it runs',
+    body:'size_bytes > 1048576, created_at >= NOW() - INTERVAL \'7 days\', newest first. It arrives as a draft in the panel, and the footer is blunt about it: drafts are never executed automatically.',
+    zoom:{x:1300,y:700,w:620,h:349},
+    hl:[{x:1488,y:758,w:404,h:98,label:'draft only'}] },
+
+  { act:'Aurora DSQL', tag:'Apply draft', at:63.95, hold:4.0, pos:'tl',
+    title:'You are the one who presses go',
+    body:'Apply draft copies the SQL into the editor and stops there. Nothing has reached the database yet.',
+    zoom:{x:1300,y:731,w:620,h:349},
+    hl:[{x:1490,y:868,w:78,h:26,label:'copies, does not run',tone:'amber'}] },
+
+  { act:'Aurora DSQL', tag:'In the editor', at:64.90, hold:4.0, pos:'tr',
+    title:'Straight into the editor',
+    body:'Same query box, same read-only guardrails. Change a line if you want to, or run it exactly as it came.',
+    zoom:{x:584,y:440,w:730,h:411},
+    hl:[{x:596,y:498,w:496,h:126,label:'editable'}] },
+
+  { act:'Aurora DSQL', tag:'Run query', at:66.10, hold:3.0, pos:'tr',
+    zoom:{x:584,y:668,w:730,h:412},
+    hl:[{x:596,y:766,w:114,h:38},{x:716,y:760,w:386,h:32,label:'read-only'}] },
+
+  { act:'Aurora DSQL', tag:'Results', at:68.60, hold:3.0, pos:'br',
+    zoom:{x:268,y:510,w:900,h:506}, hl:[] },
+];
+
+/* ------------------------------------------------------------------ */
+const $ = id => document.getElementById(id);
+const stage=$('stage'), scene=$('scene'), vid=$('vid'), hls=$('hls'), dim=$('dim'),
+      dimHoles=$('dimHoles'), cap=$('cap'), capNum=$('capNum'), capAct=$('capAct'),
+      capTitle=$('capTitle'), capBody=$('capBody'), rail=$('rail'), ticks=$('ticks'),
+      scrub=$('scrub'), scrubFill=$('scrubFill'), timeEl=$('time'), actNow=$('actNow'),
+      holdbar=$('holdbar'), holdFill=$('holdFill'), pausedNote=$('pausedNote'),
+      bigplay=$('bigplay'), btnPlay=$('btnPlay'), togHold=$('togHold'), togZoom=$('togZoom'),
+      togOverlay=$('togOverlay'), speed=$('speed'), miss=$('miss');
+
+let cur = -1;              // active stop index
+let heldFor = -1;          // stop we have already paused on
+let holdTimer = null;      // pending resume
+let holdRaf = null;        // hold progress animation
+let userPaused = true;     // user asked for pause (vs. an automatic read-pause)
+let started = false;
+const seen = new Set();
+
+/* ---- framing: fit a video-space rect into the 16:9 stage ---- */
+function framing(rect){
+  const SW = stage.clientWidth, SH = stage.clientHeight;
+  if (!rect) return { k:SW/VW, tx:0, ty:0 };
+  const aspect = SW/SH;
+  let {x,y,w,h} = rect;
+  if (w/h < aspect){ const nw = h*aspect; x -= (nw-w)/2; w = nw; }
+  else            { const nh = w/aspect; y -= (nh-h)/2; h = nh; }
+  const k = SW/w;
+  const vw = VW*k, vh = VH*k;
+  let tx = vw <= SW ? (SW-vw)/2 : Math.min(0, Math.max(SW-vw, -x*k));
+  let ty = vh <= SH ? (SH-vh)/2 : Math.min(0, Math.max(SH-vh, -y*k));
+  return { k, tx, ty };
+}
+
+function applyFraming(rect){
+  const { k, tx, ty } = framing(togZoom.checked ? rect : null);
+  scene.style.transform = `translate(${tx}px,${ty}px) scale(${k})`;
+  scene.style.setProperty('--k', k);
+  // the visible window in video pixels, so labels know which edges they'd clip against
+  return { k, top:-ty/k, right:(-tx + stage.clientWidth)/k };
+}
+
+/* ---- render one stop ---- */
+function render(i){
+  const s = TOUR[i];
+  const view = applyFraming(s.zoom);
+
+  const show = togOverlay.checked;
+
+  hls.innerHTML = '';
+  dimHoles.innerHTML = '';
+  const boxes = show ? (s.hl || []) : [];
+  boxes.forEach(b => {
+    const el = document.createElement('div');
+    // labels sit outside the box, so flip them whenever they would run past a frame edge
+    const labelW = b.label ? (b.label.length * 8.4 + 18) / view.k : 0;
+    const clipsTop = b.y - view.top < 44;
+    const clipsRight = b.x + labelW > view.right;
+    el.className = 'hl' + (clipsTop ? ' below' : '') + (clipsRight ? ' rt' : '');
+    el.style.cssText = `left:${b.x}px;top:${b.y}px;width:${b.w}px;height:${b.h}px`;
+    if (b.tone === 'amber') el.style.setProperty('--tone', 'var(--amber)');
+    if (b.label){ const t = document.createElement('b'); t.textContent = b.label; el.appendChild(t); }
+    hls.appendChild(el);
+
+    const hole = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    hole.setAttribute('x', b.x - 6); hole.setAttribute('y', b.y - 6);
+    hole.setAttribute('width', b.w + 12); hole.setAttribute('height', b.h + 12);
+    hole.setAttribute('rx', 10); hole.setAttribute('fill', '#000');
+    dimHoles.appendChild(hole);
+  });
+  dim.classList.toggle('on', boxes.length > 0);
+  requestAnimationFrame(() => hls.querySelectorAll('.hl').forEach(el => el.classList.add('in')));
+
+  capNum.textContent = i + 1;
+  capAct.textContent = s.act;
+  capTitle.textContent = s.title || '';
+  capBody.textContent = s.body || '';
+  // a stop can omit its caption entirely and let the highlight labels speak
+  cap.className = 'cap ' + s.pos + (show && s.title ? ' in' : '');
+  actNow.textContent = `${s.act} · stop ${i+1} of ${TOUR.length}`;
+
+  seen.add(i);
+  rail.querySelectorAll('button').forEach((b, n) => {
+    b.classList.toggle('on', n === i);
+    b.classList.toggle('seen', n !== i && seen.has(n));
+  });
+}
+
+/* ---- the read-pause ---- */
+function clearHold(){
+  clearTimeout(holdTimer); holdTimer = null;
+  cancelAnimationFrame(holdRaf); holdRaf = null;
+  holdbar.classList.remove('on'); pausedNote.classList.remove('on');
+  holdFill.style.width = '0%';
+}
+
+function hold(sec){
+  clearHold();
+  vid.pause();
+  holdbar.classList.add('on'); pausedNote.classList.add('on');
+  const t0 = performance.now(), ms = sec * 1000;
+  const step = now => {
+    const p = Math.min(1, (now - t0) / ms);
+    holdFill.style.width = (p * 100) + '%';
+    if (p < 1) holdRaf = requestAnimationFrame(step);
+  };
+  holdRaf = requestAnimationFrame(step);
+  holdTimer = setTimeout(() => { clearHold(); if (!userPaused) vid.play().catch(()=>{}); }, ms);
+}
+
+/* ---- navigation ---- */
+function enter(i, { withHold }){
+  cur = i;
+  render(i);
+  if (withHold && togHold.checked){ heldFor = i; hold(TOUR[i].hold); }
+  else { heldFor = i; clearHold(); }
+}
+
+function goto(i, { play = true } = {}){
+  i = Math.max(0, Math.min(TOUR.length - 1, i));
+  started = true; bigplay.classList.add('gone');
+  userPaused = !play;
+  vid.currentTime = TOUR[i].at;
+  enter(i, { withHold: play });
+  if (play && !togHold.checked) vid.play().catch(()=>{});
+  history.replaceState(null, '', '#' + (i + 1));
+  syncPlayBtn();
+}
+
+function chapterAt(t){
+  let i = 0;
+  for (let n = 0; n < TOUR.length; n++) if (TOUR[n].at <= t + 1e-3) i = n;
+  return i;
+}
+
+/* ---- main loop ---- */
+function tick(){
+  const d = vid.duration || 1;
+  const p = Math.min(1, vid.currentTime / d);
+  scrubFill.style.width = (p * 100) + '%';
+  timeEl.textContent = `${fmt(vid.currentTime)} / ${fmt(d)}`;
+  ticks.querySelectorAll('.scrub-tick').forEach((el, n) =>
+    el.classList.toggle('done', TOUR[n].at <= vid.currentTime));
+
+  if (started && !vid.paused){
+    const i = chapterAt(vid.currentTime);
+    if (i !== cur) enter(i, { withHold: i !== heldFor });
+  }
+  requestAnimationFrame(tick);
+}
+
+const fmt = s => {
+  s = Math.max(0, s || 0);
+  return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+};
+
+function syncPlayBtn(){
+  const playing = !vid.paused || holdTimer !== null;
+  btnPlay.textContent = playing ? '❚❚ Pause' : '▶ Play';
+}
+
+function toggle(){
+  if (!started) return goto(0);
+  if (vid.paused && !holdTimer){ userPaused = false; vid.play().catch(()=>{}); }
+  else { userPaused = true; clearHold(); vid.pause(); }
+  syncPlayBtn();
+}
+
+/* ---- chapter rail ---- */
+(function buildRail(){
+  document.getElementById('stopCount').textContent = TOUR.length;
+  let act = null, ol = null;
+  TOUR.forEach((s, i) => {
+    if (s.act !== act){
+      act = s.act;
+      const sec = document.createElement('section');
+      const h = document.createElement('h4'); h.textContent = act;
+      ol = document.createElement('ol');
+      sec.append(h, ol); rail.appendChild(sec);
+    }
+    const li = document.createElement('li');
+    const b = document.createElement('button');
+    b.innerHTML = `<b>${String(i+1).padStart(2,'0')}</b><span></span>`;
+    b.querySelector('span').textContent = s.tag;
+    b.title = s.title;
+    b.onclick = () => goto(i);
+    li.appendChild(b); ol.appendChild(li);
+  });
+})();
+
+/* ---- wiring ---- */
+vid.addEventListener('loadedmetadata', () => {
+  ticks.innerHTML = '';
+  TOUR.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'scrub-tick';
+    el.style.left = `calc(${(s.at / vid.duration) * 100}% - 1px)`;
+    ticks.appendChild(el);
+  });
+  // #7 deep-links straight to a stop, paused, so a single moment can be shared
+  const deep = parseInt((location.hash || '').slice(1), 10);
+  if (deep >= 1 && deep <= TOUR.length){ goto(deep - 1, { play:false }); return; }
+
+  vid.currentTime = TOUR[0].at;
+  cur = 0; heldFor = 0; render(0);
+  cap.classList.remove('in');            // keep the poster clean until Play
+  timeEl.textContent = `0:00 / ${fmt(vid.duration)}`;
+});
+vid.addEventListener('error', () => miss.classList.add('on'));
+vid.addEventListener('play',  syncPlayBtn);
+vid.addEventListener('pause', syncPlayBtn);
+vid.addEventListener('ended', () => { userPaused = true; clearHold(); syncPlayBtn(); });
+
+bigplay.onclick = () => goto(0);
+btnPlay.onclick = toggle;
+$('btnPrev').onclick = () => goto(cur - 1);
+$('btnNext').onclick = () => goto(cur + 1);
+
+togZoom.onchange    = () => render(Math.max(0, cur));
+togOverlay.onchange = () => render(Math.max(0, cur));
+togHold.onchange    = () => { if (!togHold.checked && holdTimer){ clearHold(); if (!userPaused) vid.play().catch(()=>{}); } };
+speed.onchange      = () => { vid.playbackRate = +speed.value; };
+
+scrub.onclick = e => {
+  const r = scrub.getBoundingClientRect();
+  const t = ((e.clientX - r.left) / r.width) * (vid.duration || 0);
+  started = true; bigplay.classList.add('gone');
+  vid.currentTime = t;
+  const i = chapterAt(t);
+  enter(i, { withHold: false });
+};
+
+addEventListener('keydown', e => {
+  if (e.target.matches('input,select,textarea')) return;
+  const k = e.key.toLowerCase();
+  if (e.code === 'Space'){ e.preventDefault(); toggle(); }
+  else if (e.key === 'ArrowRight'){ e.preventDefault(); goto(cur + 1); }
+  else if (e.key === 'ArrowLeft'){ e.preventDefault(); goto(cur - 1); }
+  else if (k === 'z'){ togZoom.checked = !togZoom.checked; togZoom.onchange(); }
+  else if (k === 'a'){ togOverlay.checked = !togOverlay.checked; togOverlay.onchange(); }
+  else if (k === 'p'){ togHold.checked = !togHold.checked; togHold.onchange(); }
+});
+
+let rt;
+addEventListener('resize', () => {
+  scene.classList.add('no-anim');
+  applyFraming(TOUR[Math.max(0,cur)].zoom);
+  clearTimeout(rt);
+  rt = setTimeout(() => scene.classList.remove('no-anim'), 120);
+});
+
+applyFraming(null);
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

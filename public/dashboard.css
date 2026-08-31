@@ -1,10 +1,10 @@
 .stats{grid-template-columns:repeat(6,1fr)}
-.stats article{padding:18px}.stats strong{font-size:24px}.grid{grid-template-columns:1fr 1fr}
+.stats article{padding:18px}.stats strong{font-size:25px}.grid{grid-template-columns:1fr 1fr}
 .amber-dot{background:var(--amber)}
 .scroll-chart,.scroll-list{height:310px;overflow:auto;padding-right:5px}
 .function-row{grid-template-columns:minmax(0,1fr) auto}.function-row b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.warn{color:var(--amber)!important}
-.composition-row{display:grid;grid-template-columns:110px 1fr 28px;gap:10px;align-items:center;margin:13px 0;color:var(--muted);font-size:11px}.composition-row .track{height:6px;background:var(--line);border-radius:4px}.composition-row .fill{height:100%;background:linear-gradient(90deg,var(--blue),var(--cyan));border-radius:4px}.composition-row b{color:var(--text);text-align:right}
-.outputs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.output{background:#0b1018;border:1px solid var(--line);border-radius:6px;padding:12px;min-width:0}.output label{display:block;color:var(--muted);font-size:10px;margin-bottom:7px}.output code{font-size:11px;color:var(--cyan);overflow-wrap:anywhere}
+.composition-row{display:grid;grid-template-columns:110px 1fr 28px;gap:10px;align-items:center;margin:13px 0;color:var(--muted);font-size:12px}.composition-row .track{height:6px;background:var(--line);border-radius:4px}.composition-row .fill{height:100%;background:linear-gradient(90deg,var(--blue),var(--cyan));border-radius:4px}.composition-row b{color:var(--text);text-align:right}
+.outputs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.output{background:#0b1018;border:1px solid var(--line);border-radius:6px;padding:12px;min-width:0}.output label{display:block;color:var(--muted);font-size:11px;margin-bottom:7px}.output code{font-size:12px;color:var(--cyan);overflow-wrap:anywhere}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media(max-width:1150px){.stats{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:850px){.stats{grid-template-columns:1fr 1fr}.outputs{grid-template-columns:1fr}}

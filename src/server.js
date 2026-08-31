@@ -10,7 +10,7 @@ import { BedrockAssistant } from './bedrock.js';
 import { previewOffice } from './office.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 export async function start(options) {
   const initialWorkspace = await createWorkspace(options);
@@ -42,9 +42,14 @@ export async function start(options) {
         const input = Object.fromEntries(url.searchParams); if (!input.key) throw new Error('An object key is required');
         const object = await aws.getBucketObject(input);
         if (url.pathname.endsWith('/office')) return json(res, { text: previewOffice(object.buffer, path.extname(input.key).toLowerCase()), ...objectMetadata(object) });
-        const disposition = url.searchParams.get('download') === '1' ? 'attachment' : 'inline';
-        res.writeHead(200, { 'content-type': object.contentType, 'content-length': object.buffer.length, 'content-disposition': `${disposition}; filename*=UTF-8''${encodeURIComponent(path.basename(input.key))}`, 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
-        return res.end(object.buffer);
+        return sendObject(res, url, object, input.key);
+      }
+      if (url.pathname === '/api/s3/archive/list') return json(res, await aws.listArchive(archiveInput(url)));
+      if (url.pathname === '/api/s3/archive/object' || url.pathname === '/api/s3/archive/office') {
+        const input = archiveInput(url); if (!input.entryPath) throw new Error('An archive entry path is required');
+        const entry = await aws.getArchiveEntry(input);
+        if (url.pathname.endsWith('/office')) return json(res, { text: previewOffice(entry.buffer, path.extname(input.entryPath).toLowerCase()), ...objectMetadata(entry) });
+        return sendObject(res, url, entry, input.entryPath);
       }
       if (url.pathname.startsWith('/api/') && req.method === 'POST') {
         if (req.headers['x-stackeye-request'] !== '1') return json(res, { error: 'Invalid local request' }, 403);
@@ -61,9 +66,11 @@ export async function start(options) {
         if (url.pathname === '/api/dsql/schema') return json(res, await aws.dsqlSchema(body));
         if (url.pathname === '/api/dsql/query') return json(res, await aws.dsqlQuery(body));
         if (url.pathname === '/api/api-gateway/invoke') return json(res, await aws.invokeApi(body));
+        if (url.pathname === '/api/eventbridge/test-pattern') return json(res, await aws.testEventPattern(body));
+        if (url.pathname === '/api/step-functions/test-state') return json(res, await aws.testState(body));
       }
       const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-      if (!['index.html', 'app.js', 'style.css', 'dashboard.css', 'workbench.css', 'query.css', 's3.css', 'dsql.css', 'dsql-erd.css', 'icons.css', 'resource-nav.css', 'architecture.css', 'architecture-routing.css', 'architecture-focus.css', 'workspaces.css', 'assistant.css'].includes(name) && !/^icons\/[a-z0-9-]+\.svg$/.test(name)) return json(res, { error: 'Not found' }, 404);
+      if (!['index.html', 'app.js', 'style.css', 'dashboard.css', 'workbench.css', 'query.css', 's3.css', 'dsql.css', 'dsql-erd.css', 'step-functions.css', 'icons.css', 'resource-nav.css', 'architecture.css', 'architecture-routing.css', 'architecture-focus.css', 'workspaces.css', 'assistant.css', 'brand.css', 'stackeye-logo.png', 'favicon.png'].includes(name) && !/^icons\/[a-z0-9-]+\.svg$/.test(name)) return json(res, { error: 'Not found' }, 404);
       const body = await fs.readFile(path.join(root, 'public', name));
       res.writeHead(200, { 'content-type': mime[path.extname(name)], 'cache-control': 'no-store' }); res.end(body);
     } catch (error) { json(res, { error: error.message }, error.name === 'ResourceNotFoundException' ? 404 : 500); }
@@ -119,6 +126,13 @@ async function readJson(req) {
 }
 function simplifyDynamo(result) { return { items: result.Items || [], attributes: result.Attributes, count: result.Count, scannedCount: result.ScannedCount, lastEvaluatedKey: result.LastEvaluatedKey }; }
 function objectMetadata(object) { return { contentType: object.contentType, length: object.length, modified: object.modified, etag: object.etag }; }
+// Nested archives arrive as repeated `archive` params, which Object.fromEntries would collapse to the last hop.
+function archiveInput(url) { return { ...Object.fromEntries(url.searchParams), trail: url.searchParams.getAll('archive') }; }
+function sendObject(res, url, object, name) {
+  const disposition = url.searchParams.get('download') === '1' ? 'attachment' : 'inline';
+  res.writeHead(200, { 'content-type': object.contentType, 'content-length': object.buffer.length, 'content-disposition': `${disposition}; filename*=UTF-8''${encodeURIComponent(path.basename(name))}`, 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
+  res.end(object.buffer);
+}
 function isAuthenticationError(error) {
   const message = String(error?.message || error);
   return /token|credentials|sso|login|unauthorized|expired/i.test(message);

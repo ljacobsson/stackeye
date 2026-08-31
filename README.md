@@ -2,7 +2,7 @@
 
 A focused, zero-configuration local observability dashboard for deployed AWS SAM and AWS CDK stacks. It discovers a SAM template or synthesized CDK cloud assembly, resolves the stack's physical resources through CloudFormation, and shows metrics, architecture, logs, and resource workbenches in a polished local web app.
 
-![StackEye Demo](public/demo.gif)
+![StackEye Demo](https://raw.githubusercontent.com/ljacobsson/stackeye/main/public/demo.gif)
 
 ## Install globally
 

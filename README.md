@@ -74,26 +74,41 @@ Global and deploy parameters from the selected environment are merged, including
 
 The dashboard opens at `http://127.0.0.1:4111`. It only binds to localhost.
 
-## What it includes
+## Features
 
-- Stack status, deployed resources, and physical IDs
-- Lambda invocations, errors, error rate, duration, concurrency, and throttles
-- Lambda traffic, failure rate, concurrency, throttling, latency, workload ranking, async age, and dead-letter failures
-- API Gateway request volume, 4XX/5XX failures, total latency, and integration latency
-- DynamoDB read/write consumption, throttles, system/user errors, table health, and workload ranking
-- Stack resource composition, outputs, deployment state, and physical identifiers
-- CloudWatch log tailing with function selection and server-side filter patterns
-- An operational resource navigator generated from the deployed stack, excluding infrastructure-only artifacts such as permissions, policies, generated API deployments, and DNS records
-- Lambda test invocations with named JSON events saved locally in `.stackeye/payloads.json`
-- DynamoDB schema-aware scan, primary/GSI query, and conditional update builders; single-table item-collection navigation; schema discovery; and tabular results
-- A read-only SQL editor for Aurora DSQL clusters in the stack, with schema browsing, one-click table queries, primary-key hints, and typed result columns
-- An ER diagram of any Aurora DSQL cluster, drawn from declared foreign keys where they exist and from inferred column-name references where they do not, since Aurora DSQL has no foreign key constraints
-- S3 folder browsing, bucket-wide filename search, downloads, and private localhost previews for images, PDF, text/code, Word, Excel, and PowerPoint files
-- Time-range selection and manual metric refresh
-- AWS profile, credential chain, and region support
-- A page-aware Bedrock assistant powered by the Converse API, using credentials from the active AWS profile
-- Bedrock model selection, visible-page questions, and multimodal questions about the currently previewed S3 PDF or image
-- Reviewable AI drafts for read-only Aurora DSQL queries and schema-aware DynamoDB scans and queries; drafts are never executed automatically
+| Category | Feature |
+|----------|---------|
+| **Stack Overview** | Stack status, deployed resources, and physical IDs |
+| | Stack resource composition, outputs, deployment state, and physical identifiers |
+| | Operational resource navigator generated from the deployed stack |
+| **Lambda Metrics** | Invocations, errors, error rate, duration, concurrency, and throttles |
+| | Traffic, failure rate, concurrency, throttling, latency, and workload ranking |
+| | Async age and dead-letter queue failures |
+| **Lambda Workbench** | Test invocations with named JSON events |
+| | Events saved locally in `.stackeye/payloads.json` |
+| **API Gateway** | Request volume and 4XX/5XX failures |
+| | Total latency and integration latency metrics |
+| **DynamoDB** | Read/write consumption, throttles, and system/user errors |
+| | Table health and workload ranking |
+| | Schema-aware scan, primary/GSI query, and conditional update builders |
+| | Single-table item-collection navigation and schema discovery |
+| | Tabular results with 250-item request limits |
+| **Aurora DSQL** | Read-only SQL editor with schema browsing |
+| | One-click table queries and primary-key hints |
+| | Typed result columns with 1000-row limits |
+| | ER diagrams from declared and inferred foreign keys |
+| **S3 Explorer** | Folder browsing and bucket-wide filename search |
+| | Downloads and private localhost previews |
+| | Support for images, PDF, text/code, Word, Excel, and PowerPoint |
+| **CloudWatch Logs** | Log tailing with function selection |
+| | Server-side filter patterns |
+| **Bedrock Assistant** | Page-aware assistant powered by Converse API |
+| | Model selection and multimodal questions |
+| | S3 PDF and image analysis (up to 4.5 MB per request) |
+| | Reviewable AI drafts for DSQL queries and DynamoDB operations |
+| **AWS Integration** | AWS profile, credential chain, and region support |
+| | SSO profile authentication support |
+| | Time-range selection and manual metric refresh |
 
 The active AWS identity needs `cloudformation:DescribeStacks`, `cloudformation:ListStackResources`, `cloudwatch:GetMetricData`, `logs:FilterLogEvents`, and `sts:GetCallerIdentity`. `apigateway:GET` is optional and lets StackEye resolve REST API names for API Gateway metrics. Workbench actions additionally require `lambda:InvokeFunction`, `lambda:GetFunctionConfiguration`, `lambda:UpdateFunctionConfiguration`, `lambda:ListEventSourceMappings`, `lambda:GetEventSourceMapping`, `states:DescribeStateMachine`, `states:TestState`, `dynamodb:DescribeTable`, `dynamodb:Scan`, `dynamodb:Query`, and `dynamodb:UpdateItem` for the stack resources you want to operate on. The S3 explorer requires `s3:ListBucket` and `s3:GetObject` on the stack buckets. The Aurora DSQL editor requires `dsql:DbConnectAdmin` on the cluster, or `dsql:DbConnect` when connecting as a custom database role with `--dsql-user`.
 

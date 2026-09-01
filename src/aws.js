@@ -1,5 +1,5 @@
 import { CloudFormationClient, DescribeStacksCommand, ListStackResourcesCommand } from '@aws-sdk/client-cloudformation';
-import { CloudWatchClient, GetMetricDataCommand } from '@aws-sdk/client-cloudwatch';
+import { CloudWatchClient, GetMetricDataCommand, ListMetricsCommand } from '@aws-sdk/client-cloudwatch';
 import { CloudWatchLogsClient, FilterLogEventsCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { APIGatewayClient, GetRestApiCommand } from '@aws-sdk/client-api-gateway';
 import { GetResourcesCommand, GetStagesCommand } from '@aws-sdk/client-api-gateway';
@@ -101,14 +101,104 @@ export class AwsData {
     });
   }
 
-  async logEvents({ functionName, startTime, nextToken, filterPattern }) {
+  metricResources() {
+    const specs = {
+      'AWS::Lambda::Function': ['AWS/Lambda', 'FunctionName', (r) => r.physicalId],
+      'AWS::DynamoDB::Table': ['AWS/DynamoDB', 'TableName', (r) => r.physicalId],
+      'AWS::ApiGateway::RestApi': ['AWS/ApiGateway', 'ApiName', (r) => r.metricName || r.physicalId],
+      'AWS::ApiGatewayV2::Api': ['AWS/ApiGateway', 'ApiId', (r) => r.physicalId],
+      'AWS::S3::Bucket': ['AWS/S3', 'BucketName', (r) => r.physicalId],
+      'AWS::SQS::Queue': ['AWS/SQS', 'QueueName', (r) => String(r.physicalId).split('/').pop()],
+      'AWS::SNS::Topic': ['AWS/SNS', 'TopicName', (r) => String(r.physicalId).split(':').pop()],
+      'AWS::StepFunctions::StateMachine': ['AWS/States', 'StateMachineArn', (r) => r.physicalId],
+      'AWS::Events::Rule': ['AWS/Events', 'RuleName', (r) => r.physicalId]
+    };
+    return this.resources.flatMap((resource) => {
+      const spec = specs[resource.type];
+      return spec ? [{ resource, namespace: spec[0], dimension: { Name: spec[1], Value: spec[2](resource) } }] : [];
+    });
+  }
+
+  async metricCatalog(force = false) {
+    if (!force && this.metricCatalogCache?.expires > Date.now()) return this.metricCatalogCache.rows;
+    const rows = [];
+    await Promise.all(this.metricResources().map(async ({ resource, namespace, dimension }) => {
+      let nextToken;
+      do {
+        const page = await this.cw.send(new ListMetricsCommand({ Namespace: namespace, Dimensions: [dimension], NextToken: nextToken }));
+        for (const metric of page.Metrics || []) {
+          if (!metric.Dimensions?.some((item) => item.Name === dimension.Name && item.Value === dimension.Value)) continue;
+          const dimensions = [...metric.Dimensions].sort((a, b) => a.Name.localeCompare(b.Name));
+          const key = JSON.stringify([namespace, metric.MetricName, dimensions]);
+          rows.push({ id: Buffer.from(key).toString('base64url'), resource: resource.logicalId, physicalId: resource.physicalId,
+            resourceType: resource.type, namespace, metric: metric.MetricName, dimensions, scopeDimension: dimension.Name });
+        }
+        nextToken = page.NextToken;
+      } while (nextToken);
+    }));
+    const identities = [...new Map(rows.map((row) => [row.id, row])).values()], groups = new Map();
+    for (const row of identities) {
+      const key = `${row.resource}\0${row.namespace}\0${row.metric}`, list = groups.get(key) || [];
+      list.push(row); groups.set(key, list);
+    }
+    const unique = [...groups.values()].flatMap((variants) => {
+      const canonical = variants.find((row) => row.dimensions.length === 1 && row.dimensions[0].Name === row.scopeDimension);
+      return canonical ? [canonical] : variants;
+    }).sort((a, b) => a.resource.localeCompare(b.resource) || a.metric.localeCompare(b.metric));
+    this.metricCatalogCache = { rows: unique, expires: Date.now() + 60_000 };
+    return unique;
+  }
+
+  async browseMetrics({ ids, minutes = 60, period = 60, stat = 'Average' }) {
+    const allowedStats = new Set(['Average', 'Sum', 'Minimum', 'Maximum', 'SampleCount', 'p50', 'p90', 'p95', 'p99']);
+    if (!allowedStats.has(stat)) throw new Error('Unsupported metric statistic');
+    const catalog = await this.metricCatalog(), byId = new Map(catalog.map((row) => [row.id, row]));
+    const selected = [...new Set(Array.isArray(ids) ? ids : [])].slice(0, 20).map((id) => byId.get(id));
+    if (!selected.length || selected.some((row) => !row)) throw new Error('Select metrics from the current stack');
+    const safeMinutes = Math.max(1, Math.min(Number(minutes) || 60, 43_200));
+    const safePeriod = Math.max(1, Math.min(Number(period) || 60, 86_400));
+    const end = new Date(), start = new Date(end.getTime() - safeMinutes * 60_000);
+    const request = { StartTime: start, EndTime: end, ScanBy: 'TimestampAscending', MetricDataQueries: selected.map((row, index) => ({
+      Id: `q${index}`, Label: `${row.resource} · ${row.metric}`,
+      MetricStat: { Metric: { Namespace: row.namespace, MetricName: row.metric, Dimensions: row.dimensions }, Period: safePeriod, Stat: stat }, ReturnData: true
+    })) };
+    const merged = new Map(); let nextToken;
+    do {
+      const page = await this.cw.send(new GetMetricDataCommand({ ...request, NextToken: nextToken }));
+      for (const series of page.MetricDataResults || []) {
+        const row = merged.get(series.Id) || { Id: series.Id, Timestamps: [], Values: [], Messages: [] };
+        row.Timestamps.push(...(series.Timestamps || [])); row.Values.push(...(series.Values || [])); row.Messages.push(...(series.Messages || [])); row.StatusCode = series.StatusCode;
+        merged.set(series.Id, row);
+      }
+      nextToken = page.NextToken;
+    } while (nextToken);
+    return [...merged.values()].map((series) => ({ ...selected[Number(series.Id.slice(1))], stat, timestamps: series.Timestamps, values: series.Values, status: series.StatusCode, messages: series.Messages }));
+  }
+
+  async logEvents({ functionName, startTime, endTime, nextToken, filterPattern, all }) {
     const fn = this.functions().find((r) => r.logicalId === functionName || r.physicalId === functionName);
     if (!fn) throw new Error('Unknown Lambda function');
-    const result = await this.logs.send(new FilterLogEventsCommand({
-      logGroupName: `/aws/lambda/${fn.physicalId}`, startTime: Number(startTime) || Date.now() - 15 * 60000,
-      nextToken: nextToken || undefined, filterPattern: filterPattern || undefined, interleaved: true, limit: 500
-    }));
-    return { events: (result.events || []).map((e) => ({ id: e.eventId, timestamp: e.timestamp, message: e.message, stream: e.logStreamName })), nextToken: result.nextToken };
+    const bounded = all === '1' || Boolean(endTime), scan = async (pattern, initialToken, maxEvents) => {
+      const found = []; let token = initialToken || undefined, previousToken;
+      do {
+        const result = await this.logs.send(new FilterLogEventsCommand({
+          logGroupName: `/aws/lambda/${fn.physicalId}`, startTime: Number(startTime) || Date.now() - 15 * 60000, endTime: Number(endTime) || undefined,
+          nextToken: token, filterPattern: pattern || undefined, interleaved: true, limit: 500
+        }));
+        found.push(...(result.events || [])); previousToken = token; token = result.nextToken;
+      } while (bounded && token && token !== previousToken && found.length < maxEvents);
+      return { found, token, truncated: Boolean(token) && found.length >= maxEvents };
+    };
+    const context = await scan(filterPattern, nextToken, 10_000), events = [...context.found];
+    // Sparse failures can be buried behind many megabytes of INFO events in a
+    // broad FilterLogEvents traversal. For bounded graph drill-downs, make a
+    // second all-stream pass for failures and merge them into their context.
+    if (bounded && !filterPattern) {
+      const failures = await scan('?ERROR ?Error ?error ?Exception ?exception ?FATAL ?Fatal ?fatal', undefined, 10_000);
+      events.push(...failures.found);
+    }
+    const unique = [...new Map(events.map((event) => [event.eventId || `${event.timestamp}|${event.logStreamName}|${event.message}`, event])).values()].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    return { events: unique.map((e) => ({ id: e.eventId, timestamp: e.timestamp, message: e.message, stream: e.logStreamName })), nextToken: context.token, truncated: context.truncated };
   }
 
   resource(type, name) {

@@ -1,6 +1,6 @@
 {
   "name": "stackeye",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Local observability, architecture, and resource workbenches for AWS SAM and CDK stacks",
   "type": "module",
   "bin": {

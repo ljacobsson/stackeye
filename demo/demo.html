@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>StackEye — annotated demo</title>
+<style>
+:root{
+  --bg:#090c12; --panel:#111722; --line:#202938; --muted:#7d899b; --text:#f3f6fa;
+  --blue:#63a4ff; --cyan:#55e6c1; --violet:#b18cff; --amber:#ffcb66; --red:#ff6d7d;
+  --font:Inter,"Liberation Sans",ui-sans-serif,system-ui,-apple-system,sans-serif;
+  --mono:ui-monospace,"Liberation Mono",SFMono-Regular,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font)}
+
+/* ---------- preview chrome (never rendered into the mp4) ---------- */
+.wrap{max-width:1500px;margin:0 auto;padding:26px 26px 60px}
+.masthead{display:flex;align-items:baseline;gap:14px;margin-bottom:18px}
+.masthead h1{font-size:19px;font-weight:600;letter-spacing:-.3px;margin:0}
+.masthead p{margin:0;color:var(--muted);font-size:13px}
+.masthead code{font-family:var(--mono);font-size:12px;background:#151c28;border:1px solid var(--line);border-radius:5px;padding:2px 6px;color:#bcd6f8}
+.frame{position:relative;width:100%;aspect-ratio:16/9;background:#000;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.frame video{position:absolute;inset:0;width:100%;height:100%;display:block}
+.bar{display:flex;align-items:center;gap:14px;margin-top:14px}
+.bar button{font:inherit;font-size:13px;color:var(--text);background:#131925;border:1px solid var(--line);border-radius:6px;padding:8px 14px;cursor:pointer}
+.bar button:hover{background:#1a2231}
+.bar input[type=range]{flex:1;accent-color:var(--blue)}
+.bar .clock{font-family:var(--mono);font-size:13px;color:var(--muted);min-width:104px;text-align:right}
+.cues{margin-top:22px;display:grid;gap:4px}
+.cues button{display:grid;grid-template-columns:118px 92px 1fr;gap:14px;align-items:center;text-align:left;font:inherit;font-size:13px;color:var(--muted);background:none;border:1px solid transparent;border-radius:7px;padding:8px 12px;cursor:pointer}
+.cues button:hover{background:#131925}
+.cues button.live{background:#141c29;border-color:rgba(99,164,255,.28);color:var(--text)}
+.cues .rng{font-family:var(--mono);font-size:12px;color:#68758a}
+.cues .kick{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;font-weight:600}
+.cues .ttl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---------- the overlay layer (this is what gets rendered) ---------- */
+.stage{position:absolute;left:0;top:0;width:1920px;height:1080px;transform-origin:top left;pointer-events:none}
+.cue{position:absolute;width:660px;opacity:0;transition:opacity .3s linear}
+.cue.on{opacity:1}
+/* Margins keep the cards clear of the app's own chrome: the sidebar's AWS
+   account footer at bottom-left, and the floating assistant button at
+   bottom-right. */
+.cue.bl{left:56px;bottom:96px}
+.cue.br{right:120px;bottom:96px}
+/* Top-anchored cards start below the recorded browser toolbar. */
+.cue.tl{left:56px;top:130px}
+.cue.tr{right:120px;top:130px}
+
+.card{
+  position:relative;overflow:hidden;border-radius:14px;
+  padding:24px 30px 26px 32px;
+  background:linear-gradient(150deg,rgba(21,28,42,.955),rgba(11,16,25,.965));
+  border:1px solid rgba(147,175,214,.16);
+  box-shadow:0 28px 70px rgba(2,4,8,.62),inset 0 1px 0 rgba(255,255,255,.045);
+}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
+.card::after{content:"";position:absolute;left:0;top:0;width:340px;height:180px;pointer-events:none;
+  background:radial-gradient(circle at 0 0,color-mix(in srgb,var(--accent) 16%,transparent),transparent 70%)}
+.kicker{position:relative;display:flex;align-items:center;gap:10px;margin-bottom:13px;
+  color:var(--accent);font-size:12px;font-weight:600;letter-spacing:1.9px;text-transform:uppercase}
+.kicker i{width:7px;height:7px;border-radius:2px;background:var(--accent);transform:rotate(45deg);
+  box-shadow:0 0 15px var(--accent)}
+.title{position:relative;margin:0 0 11px;font-size:33px;font-weight:600;letter-spacing:-.5px;line-height:1.18;color:#f4f7fb;text-wrap:balance}
+.body{position:relative;margin:0;font-size:19px;line-height:1.52;color:#a2b0c2;text-wrap:pretty}
+.body code{font-family:var(--mono);font-size:.86em;padding:2px 7px;border-radius:5px;
+  background:color-mix(in srgb,var(--accent) 12%,transparent);
+  border:1px solid color-mix(in srgb,var(--accent) 26%,transparent);
+  color:color-mix(in srgb,var(--accent) 72%,#ffffff)}
+
+/* ---------- the closing screen (a full opaque 1920x1080 frame) ---------- */
+.outro{position:absolute;inset:0;display:none;overflow:hidden;background:#070a10}
+.outro.live{display:block}
+.outro .dots{position:absolute;inset:0;opacity:.55;
+  background-image:radial-gradient(rgba(255,255,255,.05) 1px,transparent 0);background-size:46px 46px}
+.outro .glow{position:absolute;border-radius:50%;filter:blur(6px);pointer-events:none}
+.outro .g1{left:-320px;top:-360px;width:1300px;height:1100px;
+  background:radial-gradient(circle,rgba(99,164,255,.15),transparent 62%)}
+.outro .g2{right:-420px;bottom:-460px;width:1400px;height:1200px;
+  background:radial-gradient(circle,rgba(85,230,193,.11),transparent 62%)}
+.outro .vignette{position:absolute;inset:0;
+  background:radial-gradient(120% 90% at 50% 40%,transparent 40%,rgba(2,4,8,.72))}
+.o-inner{position:absolute;inset:0;padding:0 100px;display:flex;flex-direction:column;justify-content:center}
+
+.o-logo{width:260px;margin-bottom:26px}
+.o-logo img{display:block;width:100%;height:auto}
+.o-title{margin:0 0 14px;font-size:53px;font-weight:600;letter-spacing:-1.4px;line-height:1.08;color:#f6f9fd}
+.o-title .soon{display:inline-block;margin-left:22px;vertical-align:11px;padding:8px 16px;border-radius:999px;
+  font-size:17px;font-weight:600;letter-spacing:.3px;color:#9fdcca;
+  background:rgba(85,230,193,.07);border:1px dashed rgba(85,230,193,.42)}
+.o-sub{margin:0 0 30px;font-size:21px;line-height:1.5;color:#93a2b7;max-width:1150px}
+
+.tiles{display:grid;grid-template-columns:repeat(5,1fr);gap:24px}
+.tile{position:relative;overflow:hidden;border-radius:14px;padding:20px 20px 19px;min-height:188px;
+  background:linear-gradient(158deg,#141c29,#0b1018);border:1px solid #1d2533;
+  box-shadow:0 20px 44px rgba(2,4,8,.5)}
+.tile::after{content:"";position:absolute;left:0;top:0;width:220px;height:150px;pointer-events:none;
+  background:radial-gradient(circle at 0 0,color-mix(in srgb,var(--tint) 15%,transparent),transparent 70%)}
+/* The sweep highlight. JS only animates its opacity, so the colour stays here. */
+.tile .lift{position:absolute;inset:0;border-radius:inherit;opacity:0;pointer-events:none;
+  background:linear-gradient(158deg,color-mix(in srgb,var(--tint) 20%,transparent),transparent 64%);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--tint) 48%,transparent),
+             0 0 44px color-mix(in srgb,var(--tint) 22%,transparent)}
+.tile .ico{position:relative;display:block;width:46px;height:46px;border-radius:10px;overflow:hidden;
+  box-shadow:0 10px 22px color-mix(in srgb,var(--tint) 34%,transparent)}
+.tile .ico img{display:block;width:100%;height:100%}
+.tile b{position:relative;display:block;margin:15px 0 8px;font-size:18px;font-weight:600;letter-spacing:-.2px;color:#eef3fa}
+.tile p{position:relative;margin:0;font-size:14.5px;line-height:1.46;color:#8b99ad;text-wrap:pretty}
+
+.chips{display:flex;gap:20px;margin-top:30px}
+.chip{flex:1;display:flex;align-items:center;gap:15px;padding:15px 22px;border-radius:12px;
+  background:rgba(17,24,36,.7);border:1px solid #1b2331}
+.chip i{flex:none;width:9px;height:9px;border-radius:3px;transform:rotate(45deg);
+  background:var(--accent);box-shadow:0 0 17px var(--accent)}
+.chip b{font-size:16.5px;font-weight:600;color:#e9eff7}
+.chip span{font-size:15px;color:#8695a9}
+
+.o-trust{display:flex;align-items:center;gap:19px;margin-top:20px;padding:17px 24px;border-radius:12px;
+  background:linear-gradient(100deg,rgba(85,230,193,.075),rgba(99,164,255,.045));
+  border:1px solid rgba(85,230,193,.2)}
+.o-trust svg{flex:none;width:27px;height:27px;fill:none;stroke:var(--cyan);stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round}
+.o-trust b{display:block;font-size:16.5px;font-weight:600;color:#e6f4f0}
+.o-trust span{display:block;margin-top:5px;font-size:15px;line-height:1.45;color:#8a99ab}
+
+.o-foot{display:flex;align-items:center;gap:26px;margin-top:30px}
+.o-foot code{font-family:var(--mono);font-size:25px;padding:12px 22px;border-radius:10px;
+  background:rgba(99,164,255,.1);border:1px solid rgba(99,164,255,.34);color:#addaff}
+.o-foot .rule{flex:1;height:1px;transform-origin:left center;
+  background:linear-gradient(90deg,rgba(99,164,255,.55),rgba(85,230,193,.3),transparent)}
+.o-foot .link{font-size:18px;color:#7d899b;letter-spacing:.2px}
+
+/* ---------- render mode: only the overlay layer, transparent background ---------- */
+html.render,html.render body{background:transparent}
+html.render .wrap{max-width:none;margin:0;padding:0}
+html.render .masthead,html.render .bar,html.render .cues,html.render video{display:none}
+html.render .frame{width:1920px;height:1080px;aspect-ratio:auto;border:0;border-radius:0;background:transparent;overflow:visible}
+html.render .cue{transition:none}
+html.render-outro .cue{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="masthead">
+    <h1>StackEye — annotated demo</h1>
+    <p>Edit <code>demo/overlays.js</code> or <code>demo/outro.js</code> and refresh. Render with <code>npm run demo:render</code>.</p>
+  </div>
+
+  <div class="frame" id="frame">
+    <video id="video" src="../public/stackeye.mp4" preload="auto" playsinline></video>
+    <div class="stage" id="stage">
+      <div class="outro" id="outro">
+        <div class="dots"></div>
+        <div class="glow g1" id="glow1"></div>
+        <div class="glow g2" id="glow2"></div>
+        <div class="vignette"></div>
+        <div class="o-inner">
+          <div class="o-logo" id="o-logo"><img src="../public/stackeye-logo.png" alt="StackEye"></div>
+          <h2 class="o-title" id="o-title"></h2>
+          <p class="o-sub" id="o-sub"></p>
+          <div class="tiles" id="tiles"></div>
+          <div class="chips" id="chips"></div>
+          <div class="o-trust" id="o-trust">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="10.5" rx="2.2"/><path d="M8 10V7.2a4 4 0 0 1 8 0V10"/><path d="M12 14v2.6"/></svg>
+            <div><b id="o-trust-label"></b><span id="o-trust-text"></span></div>
+          </div>
+          <div class="o-foot" id="o-foot">
+            <code id="o-command"></code>
+            <span class="rule" id="o-rule"></span>
+            <span class="link" id="o-link"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="bar">
+    <button id="play">Play</button>
+    <button id="prev">◀ cue</button>
+    <button id="next">cue ▶</button>
+    <button id="outro-play">Outro</button>
+    <input id="seek" type="range" min="0" max="1000" value="0" step="1">
+    <span class="clock" id="clock">0.00 / 0.00</span>
+  </div>
+
+  <div class="cues" id="cuelist"></div>
+</div>
+
+<script src="overlays.js"></script>
+<script src="outro.js"></script>
+<script>
+const CUES = window.OVERLAYS;
+const OUT = window.OUTRO;
+const stage = document.getElementById('stage');
+const video = document.getElementById('video');
+const outro = document.getElementById('outro');
+
+const inline = (s) => s
+  .replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
+  .replace(/`([^`]+)`/g, '<code>$1</code>');
+
+const nodes = CUES.map((cue) => {
+  const el = document.createElement('div');
+  el.className = `cue ${cue.pos || 'bl'}`;
+  el.style.setProperty('--accent', `var(--${cue.accent || 'blue'})`);
+  el.innerHTML =
+    `<div class="card">` +
+      `<div class="kicker"><i></i>${inline(cue.kicker)}</div>` +
+      `<h2 class="title">${inline(cue.title)}</h2>` +
+      `<p class="body">${inline(cue.body)}</p>` +
+    `</div>`;
+  stage.insertBefore(el, outro);
+  return el;
+});
+
+/* ------------------------------ the outro ------------------------------ */
+/* AWS architecture-icon category colours, so each tile glows like its icon. */
+const TINT = {
+  lambda: '#ED7100', 'api-gateway': '#8C4FFF', dynamodb: '#C925D1', aurora: '#C925D1',
+  s3: '#7AA116', 'step-functions': '#E7157B', sqs: '#E7157B', sns: '#E7157B',
+  eventbridge: '#E7157B', cognito: '#DD344C',
+};
+
+document.getElementById('o-title').innerHTML =
+  inline(OUT.title) + (OUT.badge ? `<span class="soon">${inline(OUT.badge)}</span>` : '');
+document.getElementById('o-sub').textContent = OUT.subtitle;
+document.getElementById('o-trust-label').textContent = OUT.trust.label;
+document.getElementById('o-trust-text').textContent = OUT.trust.text;
+document.getElementById('o-command').textContent = OUT.command;
+document.getElementById('o-link').textContent = OUT.link;
+
+const tileNodes = OUT.tiles.map((tile) => {
+  const el = document.createElement('div');
+  el.className = 'tile';
+  el.style.setProperty('--tint', TINT[tile.icon] || 'var(--blue)');
+  el.innerHTML =
+    `<span class="lift"></span>` +
+    `<span class="ico"><img src="../public/icons/${tile.icon}.svg" alt=""></span>` +
+    `<b>${inline(tile.name)}</b><p>${inline(tile.text)}</p>`;
+  document.getElementById('tiles').appendChild(el);
+  return el;
+});
+
+const chipNodes = OUT.chips.map((chip) => {
+  const el = document.createElement('div');
+  el.className = 'chip';
+  el.style.setProperty('--accent', `var(--${chip.accent || 'blue'})`);
+  el.innerHTML = `<i></i><b>${inline(chip.label)}</b><span>${inline(chip.text)}</span>`;
+  document.getElementById('chips').appendChild(el);
+  return el;
+});
+
+/* The whole closing animation is a pure function of time, so the renderer can
+   ask for any frame and the preview can drive it from a clock. */
+const TILE_STEP = 0.2;
+const TILES_AT = 0.95;
+const CHIPS_AT = TILES_AT + OUT.tiles.length * TILE_STEP + 0.15;
+const TRUST_AT = CHIPS_AT + OUT.chips.length * 0.18 + 0.35;
+const FOOT_AT = TRUST_AT + 0.5;
+const SWEEP_AT = FOOT_AT + 1.3;
+const SWEEP_STEP = 0.34;
+
+const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+const seg = (t, start, dur) => clamp01((t - start) / dur);
+const ease = (p) => 1 - (1 - p) ** 3;
+
+function rise(el, t, start, dur, shift = 22) {
+  const p = ease(seg(t, start, dur));
+  el.style.opacity = p;
+  el.style.transform = `translateY(${((1 - p) * shift).toFixed(2)}px)`;
+}
+
+function outroAt(t) {
+  document.getElementById('glow1').style.transform =
+    `translate(${(Math.sin(t * 0.42) * 30).toFixed(2)}px,${(Math.cos(t * 0.31) * 22).toFixed(2)}px)`;
+  document.getElementById('glow2').style.transform =
+    `translate(${(Math.cos(t * 0.36) * -34).toFixed(2)}px,${(Math.sin(t * 0.27) * -20).toFixed(2)}px)`;
+
+  rise(document.getElementById('o-logo'), t, 0, 0.8, 18);
+  rise(document.getElementById('o-title'), t, 0.25, 0.8);
+  rise(document.getElementById('o-sub'), t, 0.45, 0.8);
+
+  tileNodes.forEach((el, i) => {
+    const p = ease(seg(t, TILES_AT + i * TILE_STEP, 0.55));
+    /* Triangular pulse as the sweep passes this tile. */
+    const local = (t - (SWEEP_AT + i * SWEEP_STEP)) / 0.55;
+    const lift = local > -1 && local < 1 ? 1 - Math.abs(local) : 0;
+    el.style.opacity = p;
+    el.style.transform = `translateY(${((1 - p) * 26 - lift * 5).toFixed(2)}px) scale(${(0.965 + p * 0.035).toFixed(4)})`;
+    el.querySelector('.lift').style.opacity = (lift * p).toFixed(3);
+  });
+
+  chipNodes.forEach((el, j) => rise(el, t, CHIPS_AT + j * 0.18, 0.5, 16));
+
+  rise(document.getElementById('o-trust'), t, TRUST_AT, 0.6, 16);
+  rise(document.getElementById('o-foot'), t, FOOT_AT, 0.7, 16);
+  document.getElementById('o-rule').style.transform =
+    `scaleX(${ease(seg(t, FOOT_AT + 0.2, 1)).toFixed(4)})`;
+}
+
+/* ---- render mode: one still frame at a time, no animation, 1:1 scale ---- */
+const renderMode = new URLSearchParams(location.search).get('render');
+if (renderMode !== null) {
+  document.documentElement.classList.add('render');
+  if (renderMode === 'outro') {
+    document.documentElement.classList.add('render-outro');
+    outro.classList.add('live');
+    window.__outro = { duration: OUT.duration };
+    window.__outroAt = (t) => { outroAt(Number(t)); return true; };
+    window.__outroAt(0);
+  } else {
+    window.__cues = CUES.map((c) => ({ t: c.t, end: c.end }));
+    window.__showCue = (i) => {
+      nodes.forEach((n, j) => n.classList.toggle('on', j === Number(i)));
+      return true;
+    };
+    window.__showCue(renderMode);
+  }
+} else {
+  /* ---- preview mode ---- */
+  const frame = document.getElementById('frame');
+  const scale = () => stage.style.transform = `scale(${frame.clientWidth / 1920})`;
+  new ResizeObserver(scale).observe(frame);
+  scale();
+
+  const seek = document.getElementById('seek');
+  const clock = document.getElementById('clock');
+  const play = document.getElementById('play');
+  const list = document.getElementById('cuelist');
+
+  const buttons = CUES.map((cue, i) => {
+    const b = document.createElement('button');
+    b.innerHTML =
+      `<span class="rng">${cue.t.toFixed(1)}s – ${cue.end.toFixed(1)}s</span>` +
+      `<span class="kick" style="color:var(--${cue.accent || 'blue'})">${inline(cue.kicker)}</span>` +
+      `<span class="ttl">${inline(cue.title)}</span>`;
+    b.onclick = () => { stopOutro(); video.currentTime = cue.t + 0.05; };
+    list.appendChild(b);
+    return b;
+  });
+
+  /* The outro is not part of the video, so preview it on its own clock: it
+     starts when the footage ends, or on demand from the Outro button. */
+  let outroStart = null;
+  function playOutro() {
+    video.pause();
+    outro.classList.add('live');
+    outroStart = performance.now();
+  }
+  function stopOutro() {
+    outroStart = null;
+    outro.classList.remove('live');
+  }
+  document.getElementById('outro-play').onclick = () => (outroStart === null ? playOutro() : stopOutro());
+  video.onended = playOutro;
+
+  const tick = () => {
+    if (outroStart !== null) {
+      const t = (performance.now() - outroStart) / 1000;
+      outroAt(Math.min(t, OUT.duration));
+      clock.textContent = `outro ${Math.min(t, OUT.duration).toFixed(2)} / ${OUT.duration.toFixed(2)}`;
+      if (t > OUT.duration + 1.2) stopOutro();
+    } else {
+      const t = video.currentTime;
+      CUES.forEach((cue, i) => {
+        const live = t >= cue.t && t < cue.end;
+        nodes[i].classList.toggle('on', live);
+        buttons[i].classList.toggle('live', live);
+      });
+      if (video.duration) {
+        seek.value = Math.round((t / video.duration) * 1000);
+        clock.textContent = `${t.toFixed(2)} / ${video.duration.toFixed(2)}`;
+      }
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+
+  play.onclick = () => { stopOutro(); video.paused ? video.play() : video.pause(); };
+  video.onplay = () => play.textContent = 'Pause';
+  video.onpause = () => play.textContent = 'Play';
+  seek.oninput = () => { stopOutro(); video.currentTime = (seek.value / 1000) * (video.duration || 0); };
+
+  const jump = (dir) => {
+    stopOutro();
+    const t = video.currentTime;
+    const starts = CUES.map((c) => c.t);
+    const target = dir > 0
+      ? starts.find((s) => s > t + 0.15)
+      : [...starts].reverse().find((s) => s < t - 0.15);
+    if (target !== undefined) video.currentTime = target + 0.05;
+  };
+  document.getElementById('next').onclick = () => jump(1);
+  document.getElementById('prev').onclick = () => jump(-1);
+
+  addEventListener('keydown', (e) => {
+    if (e.key === ' ') { e.preventDefault(); play.onclick(); }
+    if (e.key === 'ArrowRight') jump(1);
+    if (e.key === 'ArrowLeft') jump(-1);
+  });
+}
+</script>
+</body>
+</html>

@@ -72,7 +72,7 @@ export async function start(options) {
         if (url.pathname === '/api/metrics/query') return json(res, { series: await aws.browseMetrics(body) });
       }
       const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-      if (!['index.html', 'app.js', 'style.css', 'dashboard.css', 'metrics.css', 'workbench.css', 'query.css', 's3.css', 'dsql.css', 'dsql-erd.css', 'step-functions.css', 'icons.css', 'resource-nav.css', 'architecture.css', 'architecture-routing.css', 'architecture-focus.css', 'workspaces.css', 'assistant.css', 'brand.css', 'stackeye-logo.png', 'favicon.png'].includes(name) && !/^icons\/[a-z0-9-]+\.svg$/.test(name)) return json(res, { error: 'Not found' }, 404);
+      if (!['index.html', 'app.js', 'worms.js', 'style.css', 'dashboard.css', 'metrics.css', 'worms.css', 'workbench.css', 'query.css', 's3.css', 'dsql.css', 'dsql-erd.css', 'step-functions.css', 'icons.css', 'resource-nav.css', 'architecture.css', 'architecture-routing.css', 'architecture-focus.css', 'workspaces.css', 'assistant.css', 'brand.css', 'stackeye-logo.png', 'favicon.png'].includes(name) && !/^icons\/[a-z0-9-]+\.svg$/.test(name)) return json(res, { error: 'Not found' }, 404);
       const body = await fs.readFile(path.join(root, 'public', name));
       res.writeHead(200, { 'content-type': mime[path.extname(name)], 'cache-control': 'no-store' }); res.end(body);
     } catch (error) { json(res, { error: error.message }, error.name === 'ResourceNotFoundException' ? 404 : 500); }

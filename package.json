@@ -18,6 +18,8 @@
     "start": "node ./bin/stackeye.js",
     "dev": "node ./bin/stackeye.js --watch",
     "check": "node --check bin/stackeye.js && node --check src/server.js && node --check src/discovery.js && node --check src/aws.js && node --check src/dsql.js && node --check public/app.js && node --test",
+    "demo:preview": "node demo/render.mjs --preview",
+    "demo:render": "node demo/render.mjs",
     "prepublishOnly": "npm run check"
   },
   "engines": {

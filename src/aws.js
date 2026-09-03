@@ -21,7 +21,7 @@ import { isArchiveKey, archiveEntries, archiveSummary, archiveLevel, searchArchi
 const ARCHIVE_MAX_BYTES = 150_000_000, ARCHIVE_CACHE_SLOTS = 4, ARCHIVE_CACHE_BYTES = 250_000_000, ARCHIVE_SEARCH_LIMIT = 500;
 
 export class AwsData {
-  constructor({ region, profile, stackName, templateResources, dsqlUser }) {
+  constructor({ region, profile, stackName, templateResources, deployedResources, dsqlUser }) {
     const common = { region, ...(profile ? { credentials: fromIni({ profile }) } : {}) };
     this.cf = new CloudFormationClient(common); this.cw = new CloudWatchClient(common);
     this.logs = new CloudWatchLogsClient(common); this.sts = new STSClient(common); this.apiGateway = new APIGatewayClient(common);
@@ -29,25 +29,25 @@ export class AwsData {
     this.s3 = new S3Client(common);
     this.cognito = new CognitoIdentityProviderClient(common); this.sqs = new SQSClient(common); this.sns = new SNSClient(common); this.events = new EventBridgeClient(common); this.apiGatewayV2 = new ApiGatewayV2Client(common); this.stepFunctions = new SFNClient(common);
     this.dsql = new DsqlReader({ profile, user: dsqlUser });
-    this.region = region; this.stackName = stackName; this.templateResources = templateResources;
+    this.region = region; this.stackName = stackName; this.templateResources = templateResources; this.deployedResources = deployedResources;
   }
 
   async initialize() {
     const [identity, stack, deployedResources] = await Promise.all([
       this.sts.send(new GetCallerIdentityCommand({})),
-      this.cf.send(new DescribeStacksCommand({ StackName: this.stackName })),
-      this.stackResources()
+      this.deployedResources ? undefined : this.cf.send(new DescribeStacksCommand({ StackName: this.stackName })),
+      this.deployedResources || this.stackResources()
     ]);
-    const found = stack.Stacks?.[0];
+    const found = stack?.Stacks?.[0];
     this.account = identity.Account;
     this.resources = deployedResources.map((r) => ({
-      logicalId: r.LogicalResourceId, physicalId: r.PhysicalResourceId, type: r.ResourceType,
-      status: r.ResourceStatus, updatedAt: r.Timestamp
+      logicalId: r.logicalId || r.LogicalResourceId, physicalId: r.physicalId || r.PhysicalResourceId, type: r.type || r.ResourceType,
+      status: r.status || r.ResourceStatus, updatedAt: r.updatedAt || r.Timestamp
     }));
     await this.enrichApiNames();
     return { account: identity.Account, arn: identity.Arn, stack: {
-      name: found.StackName, status: found.StackStatus, createdAt: found.CreationTime,
-      updatedAt: found.LastUpdatedTime, outputs: found.Outputs || [], tags: found.Tags || []
+      name: found?.StackName || this.stackName, status: found?.StackStatus || 'TERRAFORM MANAGED', createdAt: found?.CreationTime,
+      updatedAt: found?.LastUpdatedTime, outputs: found?.Outputs || [], tags: found?.Tags || []
     }, resources: this.resources };
   }
 

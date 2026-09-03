@@ -1,7 +1,7 @@
 {
   "name": "stackeye",
-  "version": "0.1.9",
-  "description": "Local observability, architecture, and resource workbenches for AWS SAM and CDK stacks",
+  "version": "0.2.0",
+  "description": "Local observability, architecture, and resource workbenches for AWS SAM, CDK, Terraform, and Pulumi",
   "type": "module",
   "bin": {
     "stackeye": "bin/stackeye.js"
@@ -17,7 +17,7 @@
     "stackeye": "stackeye",
     "start": "node ./bin/stackeye.js",
     "dev": "node ./bin/stackeye.js --watch",
-    "check": "node --check bin/stackeye.js && node --check src/server.js && node --check src/discovery.js && node --check src/aws.js && node --check src/dsql.js && node --check public/app.js && node --test",
+    "check": "node --check bin/stackeye.js && node --check src/server.js && node --check src/discovery.js && node --check src/terraform.js && node --check src/pulumi.js && node --check src/aws.js && node --check src/dsql.js && node --check public/app.js && node --test",
     "demo:preview": "node demo/render.mjs --preview",
     "demo:render": "node demo/render.mjs",
     "prepublishOnly": "npm run check"
@@ -30,6 +30,8 @@
     "sam",
     "cdk",
     "cloudformation",
+    "terraform",
+    "pulumi",
     "serverless",
     "observability",
     "cloudwatch",

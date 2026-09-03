@@ -5,11 +5,13 @@ import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`stackeye — local observability for one SAM or CDK stack
+  console.log(`stackeye — local observability for SAM, CDK, Terraform, and Pulumi
 
 Usage: stackeye [options]
   --template <path>  SAM or CloudFormation template (auto-detected by default)
-  --stack <name>     Deployed CloudFormation stack name
+  --state <path>     Terraform state file (auto-detected by default)
+  --pulumi-state <path> Pulumi stack export JSON
+  --stack <name>     Deployed stack name
   --region <region>  AWS region
   --profile <name>   AWS shared-credentials profile
   --config <name>    samconfig.toml environment (SAM projects)
@@ -47,7 +49,7 @@ async function chooseConfig(names) {
 }
 
 start({
-  cwd: process.cwd(), template: value('--template'), stack: value('--stack'),
+  cwd: process.cwd(), template: value('--template'), terraformState: value('--state'), pulumiState: value('--pulumi-state'), stack: value('--stack'),
   region: value('--region'), profile: value('--profile'),
   configEnv: value('--config') || value('--config-env'), chooseConfig, dsqlUser: value('--dsql-user'),
   port: Number(value('--port') || process.env.PORT || 4111), open: !args.includes('--no-open')

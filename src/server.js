@@ -97,7 +97,7 @@ function json(res, value, status = 200) { res.writeHead(status, { 'content-type'
 async function createWorkspace(options) {
   const found = await discover(options);
   const profile = options.profile || found.profile;
-  const aws = new AwsData({ region: found.region, profile, stackName: found.stackName, templateResources: found.resources, dsqlUser: options.dsqlUser });
+  const aws = new AwsData({ region: found.region, profile, stackName: found.stackName, templateResources: found.resources, deployedResources: found.deployedResources, dsqlUser: options.dsqlUser });
   let snapshot;
   try { snapshot = await aws.initialize(); }
   catch (error) {
@@ -111,7 +111,7 @@ function workspaceId(found, profile) { return `${found.stackName}|${found.region
 function workspaceList(workspaces) { return [...workspaces.values()].map(({ id, context }) => ({ id, name: context.stack.name, region: context.region, profile: context.profile, status: context.stack.status })); }
 async function registerWithRunningServer(port, options) {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/workspaces`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-stackeye-request': '1' }, body: JSON.stringify({ cwd: options.cwd, template: options.template, stack: options.stack, region: options.region, profile: options.profile, configEnv: options.configEnv, dsqlUser: options.dsqlUser }), signal: AbortSignal.timeout(3000) });
+    const response = await fetch(`http://127.0.0.1:${port}/api/workspaces`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-stackeye-request': '1' }, body: JSON.stringify({ cwd: options.cwd, template: options.template, terraformState: options.terraformState, pulumiState: options.pulumiState, stack: options.stack, region: options.region, profile: options.profile, configEnv: options.configEnv, dsqlUser: options.dsqlUser }), signal: AbortSignal.timeout(3000) });
     return response.ok ? await response.json() : undefined;
   } catch { return undefined; }
 }

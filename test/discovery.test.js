@@ -5,6 +5,37 @@ import path from 'node:path';
 import test from 'node:test';
 import { discover } from '../src/discovery.js';
 
+test('discovers supported AWS resources from Terraform state', async (t) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'stackeye-terraform-'));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  await fs.writeFile(path.join(cwd, 'main.tf'), 'terraform {}');
+  await fs.writeFile(path.join(cwd, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'test-workspace', resources: [
+    { mode: 'managed', type: 'aws_lambda_function', name: 'worker', provider: 'provider[\"registry.terraform.io/hashicorp/aws\"]', instances: [{ attributes: { id: 'worker-prod', function_name: 'worker-prod' }, dependencies: ['aws_dynamodb_table.jobs'] }] },
+    { mode: 'managed', type: 'aws_dynamodb_table', name: 'jobs', provider: 'provider[\"registry.terraform.io/hashicorp/aws\"]', instances: [{ attributes: { id: 'jobs-prod', name: 'jobs-prod' } }] },
+    { mode: 'managed', type: 'random_id', name: 'suffix', provider: 'provider[\"registry.terraform.io/hashicorp/random\"]', instances: [{ attributes: { id: 'abc' } }] }
+  ] }));
+  const found = await discover({ cwd });
+  assert.equal(found.framework, 'terraform');
+  assert.equal(found.stackName, 'test-workspace');
+  assert.deepEqual(found.deployedResources.map(({ logicalId, physicalId, type }) => ({ logicalId, physicalId, type })), [
+    { logicalId: 'aws_lambda_function.worker', physicalId: 'worker-prod', type: 'AWS::Lambda::Function' },
+    { logicalId: 'aws_dynamodb_table.jobs', physicalId: 'jobs-prod', type: 'AWS::DynamoDB::Table' }
+  ]);
+  assert.ok(found.architecture.edges.some((edge) => edge.source === 'aws_lambda_function.worker' && edge.target === 'aws_dynamodb_table.jobs'));
+});
+
+test('honors an explicit Terraform state path', async (t) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'stackeye-terraform-state-'));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  await fs.mkdir(path.join(cwd, 'state'));
+  await fs.writeFile(path.join(cwd, 'state', 'prod.tfstate'), JSON.stringify({ version: 4, resources: [
+    { mode: 'managed', type: 'aws_s3_bucket', name: 'assets', provider: 'provider[\"registry.terraform.io/hashicorp/aws\"]', instances: [{ attributes: { id: 'company-assets' } }] }
+  ] }));
+  const found = await discover({ cwd, terraformState: 'state/prod.tfstate', stack: 'production' });
+  assert.equal(found.stackName, 'production');
+  assert.equal(found.deployedResources[0].physicalId, 'company-assets');
+});
+
 async function cdkProject(stacks) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stackeye-cdk-'));
   const out = path.join(root, 'cdk.out');

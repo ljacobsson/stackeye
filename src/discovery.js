@@ -2,10 +2,22 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
 import { parse as parseToml } from 'smol-toml';
+import { discoverTerraform } from './terraform.js';
+import { discoverPulumi } from './pulumi.js';
 
 const candidates = ['template.yaml', 'template.yml', 'sam.yaml', 'sam.yml'];
 
-export async function discover({ cwd, template, stack, region, configEnv, chooseConfig }) {
+export async function discover({ cwd, template, terraformState, pulumiState, stack, region, configEnv, chooseConfig }) {
+  if (pulumiState || (!template && !terraformState && await hasPulumi(cwd))) {
+    const found = await discoverPulumi(cwd, pulumiState, stack);
+    return { templatePath: found.exportPath, stackName: found.stackName, region: region || found.region || process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION,
+      framework: 'pulumi', resources: found.resources.map(({ logicalId, type }) => ({ logicalId, type, properties: {} })), deployedResources: found.resources, architecture: found.architecture };
+  }
+  if (terraformState || (!template && await hasTerraform(cwd))) {
+    const found = await discoverTerraform(cwd, terraformState);
+    return { templatePath: found.statePath, stackName: stack || found.workspace, region: region || process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION,
+      framework: 'terraform', resources: found.resources.map(({ logicalId, type }) => ({ logicalId, type, properties: {} })), deployedResources: found.resources, architecture: found.architecture };
+  }
   const located = template ? { templatePath: path.resolve(cwd, template) } : await findTemplate(cwd, stack);
   const templatePath = located.templatePath;
   let source;
@@ -46,6 +58,13 @@ export async function discover({ cwd, template, stack, region, configEnv, choose
     })),
     architecture: architecture(document.Resources, document.Globals)
   };
+}
+
+async function hasTerraform(cwd) {
+  try { return (await fs.readdir(cwd)).some((name) => name.endsWith('.tf') || name === 'terraform.tfstate'); } catch { return false; }
+}
+async function hasPulumi(cwd) {
+  try { return (await fs.readdir(cwd)).some((name) => /^Pulumi\.ya?ml$/i.test(name)); } catch { return false; }
 }
 
 function architecture(resources, globals = {}) {

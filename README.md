@@ -1,6 +1,6 @@
 # StackEye
 
-A focused, zero-configuration local observability dashboard for deployed AWS SAM and AWS CDK stacks. It discovers a SAM template or synthesized CDK cloud assembly, resolves the stack's physical resources through CloudFormation, and shows metrics, architecture, logs, and resource workbenches in a polished local web app.
+A focused, zero-configuration local observability dashboard for AWS infrastructure deployed with SAM, CDK, Terraform, or Pulumi. It discovers CloudFormation templates, Terraform state, or Pulumi stack exports and shows metrics, architecture, logs, and resource workbenches in a polished local web app.
 
 ![StackEye Demo](https://raw.githubusercontent.com/ljacobsson/stackeye/main/public/demo.gif)
 
@@ -11,7 +11,7 @@ npm install -g stackeye
 stackeye
 ```
 
-Run `stackeye` from a SAM or CDK project directory. StackEye opens its local dashboard at `http://127.0.0.1:4111`.
+Run `stackeye` from a SAM, CDK, Terraform, or Pulumi project directory. StackEye opens its local dashboard at `http://127.0.0.1:4111`.
 
 ### Develop StackEye against another project
 
@@ -64,6 +64,40 @@ npx stackeye --stack MyApplicationStack
 
 You can also point directly at any synthesized CloudFormation JSON or YAML template with `--template`; when doing so, pass `--stack` if its deployed stack name cannot be inferred from the containing folder.
 
+## Use it in a Terraform project
+
+Run StackEye from an applied Terraform project:
+
+```bash
+npx stackeye --region eu-north-1
+```
+
+StackEye reads `terraform.tfstate` when present. For remote backends, it runs `terraform show -json`, so the Terraform CLI must be installed and the working directory initialized. Select another local state file with `--state`:
+
+```bash
+npx stackeye --state state/production.tfstate --stack production
+```
+
+Terraform support includes Lambda, DynamoDB, S3, SQS, SNS, EventBridge rules, API Gateway REST and HTTP APIs, Step Functions, Cognito user pools, and Aurora DSQL clusters. StackEye only reads state; it does not run `plan`, `apply`, or change Terraform-managed infrastructure.
+
+## Use it in a Pulumi project
+
+Run StackEye from a Pulumi project with a selected stack:
+
+```bash
+pulumi stack select production
+npx stackeye
+```
+
+StackEye detects `Pulumi.yaml` and runs `pulumi stack export`. Select a stack without changing the current Pulumi stack using `--stack`, or read an existing export without invoking the Pulumi CLI:
+
+```bash
+npx stackeye --stack production
+npx stackeye --pulumi-state stack-export.json
+```
+
+Both the classic AWS and AWS Native Pulumi providers are supported for the same AWS resource families as Terraform. StackEye only exports stack state; it does not run `preview`, `up`, or modify Pulumi-managed infrastructure.
+
 When `samconfig.toml` contains multiple environments (for example `default`, `staging`, and `production`), StackEye asks which one to use before connecting to AWS. For non-interactive use, select it explicitly:
 
 ```bash
@@ -110,7 +144,7 @@ The dashboard opens at `http://127.0.0.1:4111`. It only binds to localhost.
 | | SSO profile authentication support |
 | | Time-range selection and manual metric refresh |
 
-The active AWS identity needs `cloudformation:DescribeStacks`, `cloudformation:ListStackResources`, `cloudwatch:GetMetricData`, `logs:FilterLogEvents`, and `sts:GetCallerIdentity`. `apigateway:GET` is optional and lets StackEye resolve REST API names for API Gateway metrics. Workbench actions additionally require `lambda:InvokeFunction`, `lambda:GetFunctionConfiguration`, `lambda:UpdateFunctionConfiguration`, `lambda:ListEventSourceMappings`, `lambda:GetEventSourceMapping`, `states:DescribeStateMachine`, `states:TestState`, `dynamodb:DescribeTable`, `dynamodb:Scan`, `dynamodb:Query`, and `dynamodb:UpdateItem` for the stack resources you want to operate on. The S3 explorer requires `s3:ListBucket` and `s3:GetObject` on the stack buckets. The Aurora DSQL editor requires `dsql:DbConnectAdmin` on the cluster, or `dsql:DbConnect` when connecting as a custom database role with `--dsql-user`.
+For SAM and CDK, the active AWS identity needs `cloudformation:DescribeStacks` and `cloudformation:ListStackResources`. All project types need `cloudwatch:GetMetricData`, `logs:FilterLogEvents`, and `sts:GetCallerIdentity`. `apigateway:GET` is optional and lets StackEye resolve REST API names for API Gateway metrics. Workbench actions additionally require `lambda:InvokeFunction`, `lambda:GetFunctionConfiguration`, `lambda:UpdateFunctionConfiguration`, `lambda:ListEventSourceMappings`, `lambda:GetEventSourceMapping`, `states:DescribeStateMachine`, `states:TestState`, `dynamodb:DescribeTable`, `dynamodb:Scan`, `dynamodb:Query`, and `dynamodb:UpdateItem` for the resources you want to operate on. The S3 explorer requires `s3:ListBucket` and `s3:GetObject` on the discovered buckets. The Aurora DSQL editor requires `dsql:DbConnectAdmin` on the cluster, or `dsql:DbConnect` when connecting as a custom database role with `--dsql-user`.
 
 The assistant requires `bedrock:InvokeModel` for the selected model in the active region. Questions and visible page context are sent directly from the local StackEye process to Amazon Bedrock in your AWS account. When an S3 PDF or image is visible, StackEye reads at most 4.5 MB with the existing `s3:GetObject` permission and supplies the bytes to Converse. It does not upload the file to any third-party service. Additional Converse-compatible model IDs can be exposed in the selector with a comma-separated `STACKEYE_BEDROCK_MODELS` environment variable.
 

@@ -2,8 +2,23 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import test from 'node:test';
 import { discover } from '../src/discovery.js';
+
+const execute = promisify(execFile);
+
+test('allows a GitHub repository to continue as an Amplify-only project', async (t) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'stackeye-amplify-'));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  await execute('git', ['init', cwd]);
+  await execute('git', ['-C', cwd, 'remote', 'add', 'origin', 'git@github.com:acme/website.git']);
+  const found = await discover({ cwd, profile: 'dev' });
+  assert.equal(found.framework, 'amplify');
+  assert.equal(found.stackName, path.basename(cwd));
+  assert.deepEqual(found.deployedResources, []);
+});
 
 test('discovers supported AWS resources from Terraform state', async (t) => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'stackeye-terraform-'));
@@ -206,4 +221,137 @@ test('shows Step Functions invoking Lambdas from definitions and role permission
   assert.ok(found.architecture.nodes.some((node) => node.id === 'Workflow' && node.type === 'AWS::StepFunctions::StateMachine'));
   assert.ok(found.architecture.edges.some((edge) => edge.source === 'Workflow' && edge.target === 'StartJob' && edge.label === 'invokes'));
   assert.ok(found.architecture.edges.some((edge) => edge.source === 'Workflow' && edge.target === 'FinishJob' && edge.label === 'invokes'));
+});
+
+test('connects one Lambda to another when only the environment names it', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stackeye-sam-fanout-'));
+  await fs.writeFile(path.join(root, 'template.yaml'), `Transform: AWS::Serverless-2016-10-31
+Resources:
+  Caller:
+    Type: AWS::Serverless::Function
+    Properties:
+      Environment:
+        Variables:
+          WORKER: !Ref Worker
+          FLOW: !Ref Flow
+  Worker:
+    Type: AWS::Serverless::Function
+  Flow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Definition:
+        StartAt: Work
+        States:
+          Work:
+            Type: Task
+            Resource: !GetAtt Worker.Arn
+            End: true
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref Table
+  Table:
+    Type: AWS::Serverless::SimpleTable
+`);
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const { edges } = (await discover({ cwd: root })).architecture;
+  assert.ok(edges.some((edge) => edge.source === 'Caller' && edge.target === 'Worker' && edge.label === 'invokes'));
+  assert.ok(edges.some((edge) => edge.source === 'Caller' && edge.target === 'Flow' && edge.label === 'starts execution'));
+  assert.ok(edges.some((edge) => edge.source === 'Flow' && edge.target === 'Worker' && edge.label === 'invokes'));
+  assert.ok(edges.some((edge) => edge.source === 'Flow' && edge.target === 'Table' && edge.label === 'uses'));
+});
+
+test('reads SAM connectors, dead letters and invoke destinations as outgoing traffic', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stackeye-sam-connector-'));
+  await fs.writeFile(path.join(root, 'template.yaml'), `Transform: AWS::Serverless-2016-10-31
+Resources:
+  Producer:
+    Type: AWS::Serverless::Function
+    Connectors:
+      ToWorker:
+        Properties:
+          Destination:
+            Id: Worker
+          Permissions: [Write]
+    Properties:
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt Failures.Arn
+      EventInvokeConfig:
+        DestinationConfig:
+          OnFailure:
+            Type: SQS
+            Destination: !GetAtt Failures.Arn
+  Worker:
+    Type: AWS::Serverless::Function
+  Link:
+    Type: AWS::Serverless::Connector
+    Properties:
+      Source:
+        Id: Worker
+      Destination:
+        Id: Work
+      Permissions: [Write]
+  Work:
+    Type: AWS::SQS::Queue
+  Failures:
+    Type: AWS::SQS::Queue
+`);
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const { edges } = (await discover({ cwd: root })).architecture;
+  assert.ok(edges.some((edge) => edge.source === 'Producer' && edge.target === 'Worker' && edge.label === 'invokes'));
+  assert.ok(edges.some((edge) => edge.source === 'Worker' && edge.target === 'Work' && edge.label === 'sends messages'));
+  assert.ok(edges.some((edge) => edge.source === 'Producer' && edge.target === 'Failures' && edge.label === 'dead letters'));
+  assert.ok(edges.some((edge) => edge.source === 'Producer' && edge.target === 'Failures' && edge.label === 'on failure'));
+});
+
+test('reads permissions granted through a managed policy and ignores denies', async (t) => {
+  const cwd = await cdkProject({ AppStack: { Resources: {
+    Worker: { Type: 'AWS::Lambda::Function', Properties: { Role: { 'Fn::GetAtt': ['WorkerRole', 'Arn'] } } },
+    WorkerRole: { Type: 'AWS::IAM::Role', Properties: { ManagedPolicyArns: [{ Ref: 'WorkerPolicy' }] } },
+    WorkerPolicy: { Type: 'AWS::IAM::ManagedPolicy', Properties: { PolicyDocument: { Statement: [
+      { Effect: 'Allow', Action: ['sqs:SendMessage'], Resource: { 'Fn::GetAtt': ['Queue', 'Arn'] } },
+      { Effect: 'Deny', Action: ['dynamodb:*'], Resource: { 'Fn::GetAtt': ['Table', 'Arn'] } }
+    ] } } },
+    Queue: { Type: 'AWS::SQS::Queue', Properties: {} },
+    Table: { Type: 'AWS::DynamoDB::Table', Properties: {} }
+  } } });
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const { edges } = (await discover({ cwd })).architecture;
+  assert.ok(edges.some((edge) => edge.source === 'Worker' && edge.target === 'Queue' && edge.label === 'sends messages'));
+  assert.ok(!edges.some((edge) => edge.source === 'Worker' && edge.target === 'Table'));
+});
+
+test('routes a custom event bus through its rule and reads a Lambda permission as its trigger', async (t) => {
+  const cwd = await cdkProject({ AppStack: { Resources: {
+    Bus: { Type: 'AWS::Events::EventBus', Properties: { Name: 'app' } },
+    Rule: { Type: 'AWS::Events::Rule', Properties: { EventBusName: { Ref: 'Bus' }, Targets: [{ Arn: { 'Fn::GetAtt': ['Worker', 'Arn'] } }] } },
+    Worker: { Type: 'AWS::Lambda::Function', Properties: {} },
+    Uploads: { Type: 'AWS::S3::Bucket', Properties: {} },
+    UploadPermission: { Type: 'AWS::Lambda::Permission', Properties: {
+      FunctionName: { Ref: 'Worker' }, Action: 'lambda:InvokeFunction', Principal: 's3.amazonaws.com', SourceArn: { 'Fn::GetAtt': ['Uploads', 'Arn'] }
+    } }
+  } } });
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const { nodes, edges } = (await discover({ cwd })).architecture;
+  assert.ok(nodes.some((node) => node.id === 'Bus' && node.type === 'AWS::Events::EventBus'));
+  assert.ok(edges.some((edge) => edge.source === 'Bus' && edge.target === 'Rule' && edge.label === 'event bus'));
+  assert.ok(edges.some((edge) => edge.source === 'Rule' && edge.target === 'Worker' && edge.label === 'event rule'));
+  assert.ok(edges.some((edge) => edge.source === 'Uploads' && edge.target === 'Worker' && edge.label === 'object event'));
+});
+
+test('keeps Terraform triggers that live in a resource of their own', async (t) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'stackeye-terraform-triggers-'));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const managed = (type, name, attributes) => ({ mode: 'managed', type, name, provider: 'provider["registry.terraform.io/hashicorp/aws"]', instances: [{ attributes }] });
+  await fs.writeFile(path.join(cwd, 'main.tf'), 'terraform {}');
+  await fs.writeFile(path.join(cwd, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'triggers', resources: [
+    managed('aws_lambda_function', 'worker', { id: 'worker-prod', function_name: 'worker-prod', arn: 'arn:aws:lambda:eu-north-1:1:function:worker-prod' }),
+    managed('aws_dynamodb_table', 'jobs', { id: 'jobs-prod', name: 'jobs-prod', arn: 'arn:aws:dynamodb:eu-north-1:1:table/jobs-prod' }),
+    managed('aws_s3_bucket', 'uploads', { id: 'uploads-prod', bucket: 'uploads-prod', arn: 'arn:aws:s3:::uploads-prod' }),
+    managed('aws_lambda_event_source_mapping', 'stream', { id: 'mapping', function_name: 'worker-prod', event_source_arn: 'arn:aws:dynamodb:eu-north-1:1:table/jobs-prod/stream/2026-01-01T00:00:00.000' }),
+    managed('aws_lambda_permission', 'uploads', { id: 'permission', function_name: 'worker-prod', source_arn: 'arn:aws:s3:::uploads-prod' })
+  ] }));
+  const { edges } = (await discover({ cwd })).architecture;
+  assert.ok(edges.some((edge) => edge.source === 'aws_dynamodb_table.jobs' && edge.target === 'aws_lambda_function.worker' && edge.label === 'stream event'));
+  assert.ok(edges.some((edge) => edge.source === 'aws_s3_bucket.uploads' && edge.target === 'aws_lambda_function.worker' && edge.label === 'object event'));
 });

@@ -6,6 +6,7 @@ import { GetResourcesCommand, GetStagesCommand } from '@aws-sdk/client-api-gatew
 import { ApiGatewayV2Client, GetApiCommand, GetRoutesCommand, GetStagesCommand as GetV2StagesCommand } from '@aws-sdk/client-apigatewayv2';
 import { CognitoIdentityProviderClient, DescribeUserPoolCommand, ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { SQSClient, GetQueueAttributesCommand, ReceiveMessageCommand } from '@aws-sdk/client-sqs';
+import { SSMClient, GetParameterCommand, GetParameterHistoryCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { SNSClient, GetTopicAttributesCommand, ListSubscriptionsByTopicCommand } from '@aws-sdk/client-sns';
 import { EventBridgeClient, DescribeRuleCommand, ListTargetsByRuleCommand, TestEventPatternCommand } from '@aws-sdk/client-eventbridge';
 import { LambdaClient, InvokeCommand, GetFunctionConfigurationCommand, UpdateFunctionConfigurationCommand, ListEventSourceMappingsCommand, GetEventSourceMappingCommand, waitUntilFunctionUpdated } from '@aws-sdk/client-lambda';
@@ -21,15 +22,17 @@ import { isArchiveKey, archiveEntries, archiveSummary, archiveLevel, searchArchi
 const ARCHIVE_MAX_BYTES = 150_000_000, ARCHIVE_CACHE_SLOTS = 4, ARCHIVE_CACHE_BYTES = 250_000_000, ARCHIVE_SEARCH_LIMIT = 500;
 
 export class AwsData {
-  constructor({ region, profile, stackName, templateResources, deployedResources, dsqlUser }) {
+  constructor({ region, profile, stackName, templateResources, deployedResources, framework, dsqlUser }) {
     const common = { region, ...(profile ? { credentials: fromIni({ profile }) } : {}) };
     this.cf = new CloudFormationClient(common); this.cw = new CloudWatchClient(common);
     this.logs = new CloudWatchLogsClient(common); this.sts = new STSClient(common); this.apiGateway = new APIGatewayClient(common);
     this.lambda = new LambdaClient(common); this.ddbRaw = new DynamoDBClient(common); this.ddb = DynamoDBDocumentClient.from(this.ddbRaw, { marshallOptions: { removeUndefinedValues: true } });
     this.s3 = new S3Client(common);
     this.cognito = new CognitoIdentityProviderClient(common); this.sqs = new SQSClient(common); this.sns = new SNSClient(common); this.events = new EventBridgeClient(common); this.apiGatewayV2 = new ApiGatewayV2Client(common); this.stepFunctions = new SFNClient(common);
+    this.ssm = new SSMClient(common);
     this.dsql = new DsqlReader({ profile, user: dsqlUser });
     this.region = region; this.stackName = stackName; this.templateResources = templateResources; this.deployedResources = deployedResources;
+    this.framework = framework;
   }
 
   async initialize() {
@@ -46,10 +49,14 @@ export class AwsData {
     }));
     await this.enrichApiNames();
     return { account: identity.Account, arn: identity.Arn, stack: {
-      name: found?.StackName || this.stackName, status: found?.StackStatus || 'TERRAFORM MANAGED', createdAt: found?.CreationTime,
+      name: found?.StackName || this.stackName, status: found?.StackStatus || this.managedStatus(), createdAt: found?.CreationTime,
       updatedAt: found?.LastUpdatedTime, outputs: found?.Outputs || [], tags: found?.Tags || []
     }, resources: this.resources };
   }
+
+  // Stacks discovered from IaC state instead of CloudFormation have no stack
+  // status of their own, so name the tool that manages them.
+  managedStatus() { return `${(this.framework || 'terraform').toUpperCase()} MANAGED`; }
 
   functions() { return this.resources.filter((r) => r.type === 'AWS::Lambda::Function'); }
   tables() { return this.resources.filter((r) => r.type === 'AWS::DynamoDB::Table'); }
@@ -99,6 +106,19 @@ export class AwsData {
       return { service: definition.service, resource: definition.resource, metric: definition.metric, stat: definition.stat,
         timestamps: row.Timestamps || [], values: row.Values || [], status: row.StatusCode };
     });
+  }
+
+  async amplifyHostingMetrics(appId, rangeMinutes = 60, period = 60) {
+    const end = new Date(), start = new Date(end.getTime() - Math.max(1, rangeMinutes) * 60_000);
+    const definitions = [['Requests', 'Sum'], ['4xxErrors', 'Sum'], ['5xxErrors', 'Sum'], ['Latency', 'Average'], ['BytesDownloaded', 'Sum'], ['BytesUploaded', 'Sum'], ['TokensConsumed', 'Sum']];
+    const result = await this.cw.send(new GetMetricDataCommand({
+      StartTime: start, EndTime: end, ScanBy: 'TimestampAscending',
+      MetricDataQueries: definitions.map(([metric, stat], index) => ({
+        Id: `a${index}`, Label: metric, ReturnData: true,
+        MetricStat: { Metric: { Namespace: 'AWS/AmplifyHosting', MetricName: metric, Dimensions: [{ Name: 'App', Value: appId }] }, Period: Math.max(60, Number(period) || 60), Stat: stat }
+      }))
+    }));
+    return (result.MetricDataResults || []).map((row) => ({ metric: definitions[Number(row.Id.slice(1))][0], stat: definitions[Number(row.Id.slice(1))][1], timestamps: row.Timestamps || [], values: row.Values || [], status: row.StatusCode }));
   }
 
   metricResources() {
@@ -410,8 +430,45 @@ export class AwsData {
       let definition; try { definition = JSON.parse(machine.definition); } catch { throw new Error('The deployed state-machine definition is not valid JSON'); }
       return { kind: 'state-machine', logicalId: resource.logicalId, stateMachineArn: resource.physicalId, name: machine.name, status: machine.status, type: machine.type, roleArn: machine.roleArn, creationDate: machine.creationDate, loggingConfiguration: machine.loggingConfiguration, tracingConfiguration: machine.tracingConfiguration, definition };
     }
+    if (type === 'AWS::SSM::Parameter') return this.readParameter(resource);
     if (type === 'AWS::ApiGateway::RestApi' || type === 'AWS::ApiGatewayV2::Api') return this.apiDefinition({ type, resourceName });
     throw new Error('This resource does not have a reader yet');
+  }
+
+  // A SecureString needs kms:Decrypt, which a read-only session may not have. Losing the
+  // value is better than losing the whole parameter, so the plaintext read is optional and
+  // the pane says which of the two it got.
+  async readParameter(resource) {
+    const Name = resource.physicalId;
+    let decrypted = true, parameter;
+    try { parameter = (await this.ssm.send(new GetParameterCommand({ Name, WithDecryption: true }))).Parameter; }
+    catch (error) {
+      if (error.name !== 'AccessDeniedException') throw error;
+      decrypted = false;
+      parameter = (await this.ssm.send(new GetParameterCommand({ Name, WithDecryption: false }))).Parameter;
+    }
+    // Description, tier and allowed pattern are only reported per version, so the newest
+    // history entry carries the metadata that GetParameter leaves out.
+    let versions = [];
+    try { versions = ((await this.ssm.send(new GetParameterHistoryCommand({ Name, WithDecryption: false, MaxResults: 20 }))).Parameters || []).sort((a, b) => (b.Version || 0) - (a.Version || 0)); } catch {}
+    const current = versions[0] || {};
+    return {
+      kind: 'ssm', logicalId: resource.logicalId, name: Name, arn: parameter.ARN, value: parameter.Value ?? '',
+      type: parameter.Type, dataType: parameter.DataType, version: parameter.Version, lastModified: parameter.LastModifiedDate,
+      encrypted: parameter.Type === 'SecureString', decrypted, description: current.Description || '', tier: current.Tier || 'Standard',
+      allowedPattern: current.AllowedPattern || '', keyId: current.KeyId || '', lastModifiedBy: current.LastModifiedUser || '',
+      history: versions.map((entry) => ({ version: entry.Version, at: entry.LastModifiedDate, by: entry.LastModifiedUser, description: entry.Description || '' }))
+    };
+  }
+
+  // Overwrite keeps the existing type, KMS key and tier, so an edit here can only ever
+  // change the value of a parameter the template already declares.
+  async putParameter({ resourceName, value }) {
+    const resource = this.resource('AWS::SSM::Parameter', resourceName);
+    if (typeof value !== 'string') throw new Error('A parameter value must be a string');
+    if (!value.length) throw new Error('Systems Manager rejects an empty parameter value');
+    await this.ssm.send(new PutParameterCommand({ Name: resource.physicalId, Value: value, Overwrite: true }));
+    return this.readParameter(resource);
   }
 
   // CloudFormation reports a rule on a custom bus as "<bus>|<rule>". Neither name can

@@ -24,6 +24,20 @@ test('metric queries reject identities outside the stack catalog', async () => {
   await assert.rejects(() => aws.browseMetrics({ ids: ['allowed'], stat: 'NotAStatistic' }), /Unsupported/);
 });
 
+test('queries Amplify Hosting metrics by app id', async () => {
+  const aws = Object.create(AwsData.prototype);
+  aws.cw = { send: async (command) => {
+    assert.equal(command.input.MetricDataQueries.length, 7);
+    assert.deepEqual(command.input.MetricDataQueries[0].MetricStat.Metric, {
+      Namespace: 'AWS/AmplifyHosting', MetricName: 'Requests', Dimensions: [{ Name: 'App', Value: 'd123' }]
+    });
+    return { MetricDataResults: [{ Id: 'a0', Timestamps: [new Date('2026-01-01')], Values: [42], StatusCode: 'Complete' }] };
+  } };
+  const result = await aws.amplifyHostingMetrics('d123', 60, 60);
+  assert.equal(result[0].metric, 'Requests');
+  assert.deepEqual(result[0].values, [42]);
+});
+
 test('log drill-down constrains CloudWatch Logs to the selected metric period', async () => {
   const aws = Object.create(AwsData.prototype);
   aws.resources = [{ logicalId: 'Worker', physicalId: 'deployed-worker', type: 'AWS::Lambda::Function' }];

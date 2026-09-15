@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { triggerLabel, eventSourceLabel } from './graph.js';
 
 const execute = promisify(execFile);
 
@@ -26,6 +27,10 @@ const types = {
   'aws-native:stepfunctions:StateMachine': ['AWS::StepFunctions::StateMachine', ['stateMachineArn', 'arn']],
   'aws:cognito/userPool:UserPool': ['AWS::Cognito::UserPool', ['id', 'arn']],
   'aws-native:cognito:UserPool': ['AWS::Cognito::UserPool', ['userPoolId', 'id']],
+  'aws:kinesis/stream:Stream': ['AWS::Kinesis::Stream', ['name', 'arn']],
+  'aws-native:kinesis:Stream': ['AWS::Kinesis::Stream', ['name', 'arn']],
+  'aws:cloudwatch/eventBus:EventBus': ['AWS::Events::EventBus', ['name', 'arn']],
+  'aws-native:events:EventBus': ['AWS::Events::EventBus', ['name', 'arn']],
   'aws:dsql/cluster:Cluster': ['AWS::DSQL::Cluster', ['identifier', 'arn']],
   'aws-native:dsql:Cluster': ['AWS::DSQL::Cluster', ['identifier', 'arn']]
 };
@@ -66,6 +71,7 @@ export async function discoverPulumi(cwd, exportPath, requestedStack) {
       if (target && target !== source) edges.push({ source, target, label: 'uses' });
     }
   }
+  edges.push(...triggerEdges(all, mapped));
   const stackResource = all.find((resource) => resource.type === 'pulumi:pulumi:Stack');
   const provider = all.find((resource) => resource.type === 'pulumi:providers:aws');
   return {
@@ -75,6 +81,36 @@ export async function discoverPulumi(cwd, exportPath, requestedStack) {
   };
 }
 
+// Triggers live in resources of their own (an event source mapping, a
+// permission, a subscription) that are not drawn. Their per-property
+// dependencies still say exactly which resources they connect, and which way.
+function triggerEdges(all, mapped) {
+  const edges = [];
+  const add = (source, target, label) => { if (source && target && source.logicalId !== target.logicalId) edges.push({ source: source.logicalId, target: target.logicalId, label }); };
+  for (const resource of all) {
+    const kind = String(resource.type).toLowerCase();
+    const linked = (...names) => names.flatMap((name) => (resource.propertyDependencies?.[name] || []).map((urn) => mapped.get(urn)).filter(Boolean));
+    const one = (...names) => linked(...names)[0];
+    if (kind.includes('eventsourcemapping')) {
+      const source = one('eventSourceArn', 'eventSourceMappingArn');
+      add(source, one('functionName', 'functionArn'), eventSourceLabel(source?.type));
+    } else if (kind.includes('lambda') && kind.includes('permission')) {
+      const source = one('sourceArn', 'sourceAccount');
+      add(source, one('function', 'functionName'), triggerLabel(source?.type));
+    } else if (kind.includes('topicsubscription') || kind.includes('sns:subscription')) {
+      add(one('topic', 'topicArn'), one('endpoint'), 'notifies');
+    } else if (kind.includes('eventtarget')) {
+      add(one('rule'), one('arn'), 'event rule');
+    } else if (kind.includes('bucketnotification')) {
+      const bucket = one('bucket');
+      for (const target of linked('lambdaFunctions', 'queues', 'topics')) add(bucket, target, 'object event');
+    } else if (kind.includes('eventrule') || kind.endsWith('events:rule')) {
+      const rule = mapped.get(resource.urn);
+      if (rule) add(one('eventBusName'), rule, 'event bus');
+    }
+  }
+  return edges;
+}
 function first(values = {}, names) { for (const name of names) if (typeof values?.[name] === 'string' && values[name]) return values[name]; }
 function logicalName(urn = '') { return urn.split('::').at(-1) || urn; }
 function stackFromUrn(urn = '') { return urn.match(/^urn:pulumi:([^:]+)::/)?.[1]; }

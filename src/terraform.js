@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { triggerLabel, eventSourceLabel } from './graph.js';
 
 const execute = promisify(execFile);
 
@@ -16,6 +17,8 @@ const types = {
   aws_apigatewayv2_api: ['AWS::ApiGatewayV2::Api', (v) => v.id],
   aws_sfn_state_machine: ['AWS::StepFunctions::StateMachine', (v) => v.arn || v.id],
   aws_cognito_user_pool: ['AWS::Cognito::UserPool', (v) => v.id],
+  aws_kinesis_stream: ['AWS::Kinesis::Stream', (v) => v.name || v.id],
+  aws_cloudwatch_event_bus: ['AWS::Events::EventBus', (v) => v.name || v.id],
   aws_dsql_cluster: ['AWS::DSQL::Cluster', (v) => v.identifier || v.id]
 };
 
@@ -49,6 +52,7 @@ export async function discoverTerraform(cwd, statePath) {
     const target = closestAddress(dependency, drawable);
     if (drawable.has(resource.address) && target && target !== resource.address) edges.push({ source: resource.address, target, label: 'uses' });
   }
+  edges.push(...triggerEdges(instances, drawable, new Map(resources.map((resource) => [resource.logicalId, resource.type]))));
   return {
     statePath: sourcePath, resources,
     architecture: { nodes: resources.map((resource) => ({ id: resource.logicalId, type: resource.type, synthetic: false })), edges: unique(edges) },
@@ -73,6 +77,58 @@ function stateResources(resources) {
     })));
 }
 
+// Terraform keeps triggers in their own resources (an event source mapping, a
+// permission, a subscription), which are not drawable themselves. Read them so
+// the connection they describe survives, and point it the way traffic flows.
+function triggerEdges(instances, drawable, typeByAddress) {
+  const index = new Map();
+  for (const resource of instances) {
+    if (!drawable.has(resource.address)) continue;
+    for (const key of ['arn', 'id', 'name', 'function_name', 'bucket', 'url', 'identifier']) {
+      const value = resource.values?.[key];
+      if (typeof value === 'string' && value) index.set(value, resource.address);
+    }
+  }
+  const at = (value) => {
+    if (typeof value !== 'string' || !value) return undefined;
+    if (index.has(value)) return index.get(value);
+    // A stream ARN extends its table's ARN, and an alias extends its function's.
+    for (const [identifier, address] of index) {
+      if (identifier.length > 3 && value.startsWith(identifier) && !/[A-Za-z0-9_-]/.test(value[identifier.length])) return address;
+    }
+  };
+  const edges = [];
+  const add = (source, target, label) => { if (source && target && source !== target) edges.push({ source, target, label }); };
+  for (const resource of instances) {
+    const values = resource.values || {};
+    if (resource.type === 'aws_lambda_event_source_mapping') {
+      const source = at(values.event_source_arn);
+      add(source, at(values.function_name || values.function_arn), eventSourceLabel(typeByAddress.get(source)));
+    }
+    if (resource.type === 'aws_lambda_permission') {
+      const source = at(values.source_arn);
+      add(source, at(values.function_name), triggerLabel(typeByAddress.get(source)));
+    }
+    if (resource.type === 'aws_sns_topic_subscription') add(at(values.topic_arn), at(values.endpoint), 'notifies');
+    if (resource.type === 'aws_cloudwatch_event_target') add(at(values.rule), at(values.arn), 'event rule');
+    if (resource.type === 'aws_cloudwatch_event_rule' && drawable.has(resource.address)) add(at(values.event_bus_name), resource.address, 'event bus');
+    if (resource.type === 'aws_lambda_function_event_invoke_config') {
+      const fn = at(values.function_name);
+      for (const config of asArray(values.destination_config)) {
+        for (const [outcome, key] of [['on_success', 'on success'], ['on_failure', 'on failure']]) {
+          for (const destination of asArray(config?.[outcome])) add(fn, at(destination?.destination), key);
+        }
+      }
+    }
+    if (resource.type === 'aws_s3_bucket_notification') {
+      const bucket = at(values.bucket);
+      const targets = [...asArray(values.lambda_function).map((entry) => entry?.lambda_function_arn), ...asArray(values.queue).map((entry) => entry?.queue_arn), ...asArray(values.topic).map((entry) => entry?.topic_arn)];
+      for (const target of targets) add(bucket, at(target), 'object event');
+    }
+  }
+  return edges;
+}
+function asArray(value) { return value == null ? [] : Array.isArray(value) ? value : [value]; }
 function closestAddress(address, known) {
   if (known.has(address)) return address;
   return [...known].find((candidate) => address === candidate || address.startsWith(`${candidate}.`) || address.startsWith(`${candidate}[`));

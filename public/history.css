@@ -1,0 +1,23 @@
+.history-head{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px}
+.history-head h2{font-size:21px}
+.history-head p{color:var(--muted);font-size:12px;margin-top:5px}
+.history-day{color:var(--muted);font-size:10px;letter-spacing:.9px;text-transform:uppercase;margin:16px 0 8px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+.history-day:first-child{margin-top:0}
+.history-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:4px;border-radius:6px}
+.history-row:hover{background:#0e141d}
+.history-row.current{background:#101a27;box-shadow:inset 2px 0 0 var(--blue)}
+.history-open{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;width:100%;padding:11px 12px;background:none;border:0;text-align:left;color:var(--text);cursor:pointer}
+.history-icon{width:20px;height:20px;opacity:.9}
+.history-icon-fallback{width:20px;height:20px;border:1px solid var(--line);border-radius:5px;background:#131b26}
+.history-text{display:grid;gap:3px;min-width:0}
+.history-text b{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.history-text small{color:var(--muted);font-size:11px}
+.history-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:3px}
+.history-chips i{font-style:normal;background:#172131;border-radius:4px;padding:3px 6px;color:var(--muted);font:10px ui-monospace}
+.history-chips i b{color:var(--cyan);font-weight:400}
+.history-open time{color:var(--muted);font:11px ui-monospace;white-space:nowrap}
+.history-copy,.history-drop{background:none;border:0;color:var(--muted);cursor:pointer;padding:6px 8px;border-radius:5px;font-size:13px;opacity:0}
+.history-row:hover .history-copy,.history-row:hover .history-drop,.history-copy:focus-visible,.history-drop:focus-visible{opacity:1}
+.history-copy:hover{color:var(--cyan);background:#172131}
+.history-drop:hover{color:var(--red);background:#172131}
+@media(max-width:700px){.history-open{grid-template-columns:auto minmax(0,1fr)}.history-open time{display:none}}

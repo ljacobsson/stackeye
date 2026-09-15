@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`stackeye — local observability for SAM, CDK, Terraform, and Pulumi
+  console.log(`stackeye — local observability for AWS infrastructure and Amplify Hosting
 
 Usage: stackeye [options]
   --template <path>  SAM or CloudFormation template (auto-detected by default)

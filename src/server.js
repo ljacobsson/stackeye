@@ -8,6 +8,7 @@ import { AwsData } from './aws.js';
 import { PayloadStore } from './payloads.js';
 import { BedrockAssistant } from './bedrock.js';
 import { previewOffice } from './office.js';
+import { AmplifyHosting } from './amplify.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -27,8 +28,20 @@ export async function start(options) {
         return json(res, { id: requested.id, reused: Boolean(existing) });
       }
       const workspace = workspaces.get(url.searchParams.get('workspace')) || initialWorkspace;
-      const { aws, payloads, assistant, context } = workspace;
+      const { aws, payloads, assistant, hosting, context } = workspace;
       if (url.pathname === '/api/context') return json(res, { ...context, workspaceId: workspace.id, workspaces: workspaceList(workspaces) });
+      if (url.pathname === '/api/amplify') return json(res, { hosting: await optionalAmplifyHosting(hosting) });
+      if (url.pathname === '/api/amplify/details') {
+        const current = context.amplifyHosting;
+        if (!current) return json(res, { error: 'No Amplify Hosting app is connected to this project' }, 404);
+        const minutes = Math.max(1, Math.min(Number(url.searchParams.get('minutes')) || 60, 43_200));
+        const period = Math.max(60, Math.min(Number(url.searchParams.get('period')) || 60, 86_400));
+        const [deployments, amplifyMetrics] = await Promise.all([
+          hosting.deployments({ appId: current.appId, branch: current.branch, jobId: url.searchParams.get('jobId') || undefined }),
+          aws.amplifyHostingMetrics(current.appId, minutes, period)
+        ]);
+        return json(res, { hosting: current, ...deployments, metrics: amplifyMetrics });
+      }
       if (url.pathname === '/api/metrics') return json(res, await aws.metrics(Number(url.searchParams.get('minutes') || 60), Number(url.searchParams.get('period') || 60)));
       if (url.pathname === '/api/metrics/catalog') return json(res, { metrics: await aws.metricCatalog(url.searchParams.get('refresh') === '1') });
       if (url.pathname === '/api/bedrock/models') return json(res, assistant.listModels());
@@ -60,6 +73,7 @@ export async function start(options) {
         if (url.pathname === '/api/payloads/delete') return json(res, await payloads.remove(body));
         if (url.pathname === '/api/lambda/invoke') return json(res, await aws.invoke(body));
         if (url.pathname === '/api/lambda/force-cold-start') return json(res, await aws.forceColdStart(body));
+        if (url.pathname === '/api/ssm/put') return json(res, await aws.putParameter(body));
         if (url.pathname === '/api/dynamodb/describe') return json(res, await aws.describeTable(body));
         if (url.pathname === '/api/dynamodb/scan') return json(res, simplifyDynamo(await aws.scanTable(body)));
         if (url.pathname === '/api/dynamodb/query') return json(res, simplifyDynamo(await aws.queryTable(body)));
@@ -72,7 +86,7 @@ export async function start(options) {
         if (url.pathname === '/api/metrics/query') return json(res, { series: await aws.browseMetrics(body) });
       }
       const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-      if (!['index.html', 'app.js', 'worms.js', 'style.css', 'dashboard.css', 'metrics.css', 'worms.css', 'workbench.css', 'query.css', 's3.css', 'dsql.css', 'dsql-erd.css', 'step-functions.css', 'icons.css', 'resource-nav.css', 'architecture.css', 'architecture-routing.css', 'architecture-focus.css', 'workspaces.css', 'assistant.css', 'brand.css', 'stackeye-logo.png', 'favicon.png'].includes(name) && !/^icons\/[a-z0-9-]+\.svg$/.test(name)) return json(res, { error: 'Not found' }, 404);
+      if (!['index.html', 'app.js', 'worms.js', 'router.js', 'view-history.js', 'history.css', 'style.css', 'dashboard.css', 'metrics.css', 'worms.css', 'workbench.css', 'query.css', 's3.css', 'dsql.css', 'dsql-erd.css', 'step-functions.css', 'icons.css', 'resource-nav.css', 'architecture.css', 'architecture-routing.css', 'architecture-focus.css', 'workspaces.css', 'assistant.css', 'brand.css', 'amplify.css', 'stackeye-logo.png', 'favicon.png'].includes(name) && !/^icons\/[a-z0-9-]+\.svg$/.test(name)) return json(res, { error: 'Not found' }, 404);
       const body = await fs.readFile(path.join(root, 'public', name));
       res.writeHead(200, { 'content-type': mime[path.extname(name)], 'cache-control': 'no-store' }); res.end(body);
     } catch (error) { json(res, { error: error.message }, error.name === 'ResourceNotFoundException' ? 404 : 500); }
@@ -81,7 +95,7 @@ export async function start(options) {
   catch (error) {
     if (error.code !== 'EADDRINUSE') throw error;
     const joined = await registerWithRunningServer(options.port, { ...options, configEnv: initialWorkspace.context.configEnv });
-    if (!joined) throw error;
+    if (!joined.id) throw new Error(`Port ${options.port} is already in use and this project could not join the process listening on it: ${joined.error}. Start on a free port with --port <number>.`);
     const address = `http://127.0.0.1:${options.port}/?workspace=${encodeURIComponent(joined.id)}`;
     console.log(`\n  stackeye  ${initialWorkspace.context.stack.name}\n  Reused local server · ${address}\n`);
     if (options.open) openBrowser(address);
@@ -97,23 +111,39 @@ function json(res, value, status = 200) { res.writeHead(status, { 'content-type'
 async function createWorkspace(options) {
   const found = await discover(options);
   const profile = options.profile || found.profile;
-  const aws = new AwsData({ region: found.region, profile, stackName: found.stackName, templateResources: found.resources, deployedResources: found.deployedResources, dsqlUser: options.dsqlUser });
-  let snapshot;
-  try { snapshot = await aws.initialize(); }
+  const aws = new AwsData({ region: found.region, profile, stackName: found.stackName, templateResources: found.resources, deployedResources: found.deployedResources, framework: found.framework, dsqlUser: options.dsqlUser });
+  let snapshot, amplifyHosting, hosting;
+  try {
+    snapshot = await aws.initialize();
+    found.region ||= await aws.cf.config.region();
+    hosting = new AmplifyHosting({ cwd: options.cwd, region: found.region, profile });
+    amplifyHosting = found.framework === 'amplify' ? await hosting.discover() : await optionalAmplifyHosting(hosting);
+    if (found.framework === 'amplify' && !amplifyHosting) throw new Error('No Amplify Hosting app in this AWS region is connected to the project GitHub repository');
+    if (found.framework === 'amplify') {
+      found.stackName = amplifyHosting.appName || found.stackName;
+      snapshot.stack = { ...snapshot.stack, name: found.stackName, status: `AMPLIFY ${amplifyHosting.status}` };
+    }
+  }
   catch (error) {
     const loginHint = profile && isAuthenticationError(error) ? ` Run “aws sso login --profile ${profile}” and try again.` : '';
-    throw new Error(`Could not load stack “${found.stackName}”${found.region ? ` in ${found.region}` : ''}${profile ? ` using profile “${profile}”` : ''}: ${error.message}.${loginHint}`);
+    const subject = found.framework === 'amplify' ? 'project' : 'stack';
+    throw new Error(`Could not load ${subject} “${found.stackName}”${found.region ? ` in ${found.region}` : ''}${profile ? ` using profile “${profile}”` : ''}: ${error.message}.${loginHint}`);
   }
   const id = workspaceId(found, profile);
-  return { id, aws, payloads: new PayloadStore(options.cwd), assistant: new BedrockAssistant({ region: found.region, profile }), context: { ...snapshot, region: found.region, profile, configEnv: found.configEnv, framework: found.framework, templatePath: found.templatePath, architecture: found.architecture } };
+  return { id, aws, hosting, payloads: new PayloadStore(options.cwd), assistant: new BedrockAssistant({ region: found.region, profile }), context: { ...snapshot, amplifyHosting, region: found.region, profile, configEnv: found.configEnv, framework: found.framework, templatePath: found.templatePath, architecture: found.architecture } };
 }
+async function optionalAmplifyHosting(hosting) { try { return await hosting.discover(); } catch { return undefined; } }
 function workspaceId(found, profile) { return `${found.stackName}|${found.region || ''}|${profile || ''}`; }
 function workspaceList(workspaces) { return [...workspaces.values()].map(({ id, context }) => ({ id, name: context.stack.name, region: context.region, profile: context.profile, status: context.stack.status })); }
 async function registerWithRunningServer(port, options) {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/workspaces`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-stackeye-request': '1' }, body: JSON.stringify({ cwd: options.cwd, template: options.template, terraformState: options.terraformState, pulumiState: options.pulumiState, stack: options.stack, region: options.region, profile: options.profile, configEnv: options.configEnv, dsqlUser: options.dsqlUser }), signal: AbortSignal.timeout(3000) });
-    return response.ok ? await response.json() : undefined;
-  } catch { return undefined; }
+    const response = await fetch(`http://127.0.0.1:${port}/api/workspaces`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-stackeye-request': '1' }, body: JSON.stringify({ cwd: options.cwd, template: options.template, terraformState: options.terraformState, pulumiState: options.pulumiState, stack: options.stack, region: options.region, profile: options.profile, configEnv: options.configEnv, dsqlUser: options.dsqlUser }), signal: AbortSignal.timeout(30_000) });
+    if (response.ok) return await response.json();
+    // A running stackeye reports why it refused the project; anything else on the
+    // port answers with a status that is worth showing as-is.
+    let reason; try { reason = JSON.parse(await response.text()).error; } catch {}
+    return { error: reason || `the process listening there answered HTTP ${response.status}` };
+  } catch (error) { return { error: `no stackeye server answered there (${error.message})` }; }
 }
 function jsonReplacer(_key, value) {
   if (value instanceof Set) return [...value];
